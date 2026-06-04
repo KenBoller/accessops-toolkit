@@ -1,71 +1,30 @@
-After Deployment
+name: Run Tests
 
-The next enhancements I'd target are:
+on:
+  push:
+    branches:
+      - main
 
-1. Docker
+  pull_request:
+    branches:
+      - main
 
-Add:
+jobs:
+  test:
+    runs-on: ubuntu-latest
 
-Dockerfile
+    steps:
+      - uses: actions/checkout@v4
 
-and
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-docker-compose.yml
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
 
-Very recruiter-friendly.
-
-2. GitHub Actions
-
-Automatically run:
-
-pytest
-
-on every push.
-
-This is another major "real software engineering" signal.
-
-3. SQLite Backend
-
-Replace some JSON files with:
-
-SQLite
-
-for:
-
-users
-tickets
-incidents
-requests
-
-That pushes the project toward:
-
-Backend Engineer
-Platform Engineer
-IAM Engineer
-
-rather than just Python scripting.
-
-
-
-
-After deployment
-
-The next upgrade I'd tackle is not another feature.
-
-I'd make the project look more "production":
-
-v1.1.0
-
-Add:
-
-.github/workflows/
-
-with GitHub Actions:
-
-Run pytest on every push
-
-Then your GitHub page gets a green badge:
-
-Build Passing
-
-Recruiters absolutely notice that.
+      - name: Run tests
+        run: |
+          pytest
