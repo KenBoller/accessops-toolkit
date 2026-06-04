@@ -20,6 +20,15 @@ app = FastAPI(
 
 app.include_router(access_router)
 
+@app.get("/")
+def root():
+    return {
+        "project": "AccessOps Toolkit",
+        "status": "online",
+        "docs": "/docs",
+        "health": "/health"
+    }
+    
 @app.get("/health", tags=["Health"])
 def health_check() -> dict:
     return {
