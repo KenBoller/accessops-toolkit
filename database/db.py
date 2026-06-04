@@ -1,9 +1,33 @@
-import sqlite3
+"""
+AccessOps Toolkit - Database Connection
+---------------------------------------
+SQLAlchemy engine and session management.
+"""
 
-DB_PATH = "data/accessops.db"
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+DATABASE_URL = "sqlite:///data/accessops.db"
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False}
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
 
 
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_db():
+    """
+    FastAPI dependency for database sessions.
+    """
+    db = SessionLocal()
+
+    try:
+        yield db
+    finally:
+        db.close()

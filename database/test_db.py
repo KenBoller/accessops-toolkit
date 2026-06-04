@@ -1,16 +1,19 @@
-# database/test_db.py
+from database.db import SessionLocal
+from database.models import Ticket, Incident
 
-from database.db import get_connection
-
-conn = get_connection()
-cursor = conn.cursor()
+db = SessionLocal()
 
 print("\nTickets:")
-for row in cursor.execute("SELECT * FROM tickets"):
-    print(dict(row))
+for ticket in db.query(Ticket).all():
+    print(ticket.id, ticket.title, ticket.owner, ticket.status)
 
 print("\nIncidents:")
-for row in cursor.execute("SELECT * FROM incidents"):
-    print(dict(row))
+for incident in db.query(Incident).all():
+    print(
+        incident.id,
+        incident.title,
+        incident.severity,
+        incident.status
+    )
 
-conn.close()
+db.close()

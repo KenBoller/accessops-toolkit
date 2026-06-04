@@ -1,27 +1,24 @@
-from database.db import get_connection
+from database.db import SessionLocal
+from database.models import Ticket, Incident
 
-conn = get_connection()
-cursor = conn.cursor()
+db = SessionLocal()
 
-cursor.execute("""
-INSERT INTO tickets (title, owner, status)
-VALUES (?, ?, ?)
-""", (
-    "VPN Access Request",
-    "kboller",
-    "Open"
-))
+ticket = Ticket(
+    title="VPN Access Request",
+    owner="kboller",
+    status="Open"
+)
 
-cursor.execute("""
-INSERT INTO incidents (title, severity, status)
-VALUES (?, ?, ?)
-""", (
-    "Database Connectivity Alert",
-    "High",
-    "Investigating"
-))
+incident = Incident(
+    title="Database Connectivity Alert",
+    severity="High",
+    status="Investigating"
+)
 
-conn.commit()
-conn.close()
+db.add(ticket)
+db.add(incident)
+
+db.commit()
+db.close()
 
 print("Sample data inserted.")
