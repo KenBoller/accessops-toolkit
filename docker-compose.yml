@@ -1,0 +1,7 @@
+services:
+  accessops-api:
+    build: .
+    container_name: accessops-toolkit-api
+    ports:
+      - "8000:8000"
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
