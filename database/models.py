@@ -41,17 +41,25 @@ class Incident(Base):
 
 
 class AccessRequest(Base):
-    """Access request workflow record."""
-
     __tablename__ = "access_requests"
 
     id = Column(Integer, primary_key=True, index=True)
+
     username = Column(String, nullable=False)
     system = Column(String, nullable=False)
-    action = Column(String, nullable=False)
-    status = Column(String, nullable=False, default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
 
+    action = Column(String, nullable=False)
+
+    status = Column(String, nullable=False, default="pending")
+
+    requested_by = Column(String, nullable=True)
+    approved_by = Column(String, nullable=True)
+
+    rt_ticket = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    approved_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
 
 class Alert(Base):
     """SOC alert or monitoring event."""

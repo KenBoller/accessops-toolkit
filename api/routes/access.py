@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from database.db import SessionLocal
 from database.models import Ticket, Incident, AccessRequest, Alert
 
+from datetime import datetime
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
@@ -427,6 +429,81 @@ def get_incidents() -> list[IncidentResponse]:
     response_model=list[AccessRequestResponse],
     tags=["Access Requests"],
 )
+def get_access_requests() -> list[AccessRequestResponse]:
+    """Return all access requests."""
+    db = SessionLocal()
+
+    try:
+        return db.query(AccessRequest).all()
+
+    finally:
+        db.close()
+
+@router.put("/access-requests/{request_id}/approve", tags=["Access Requests"])
+def approve_access_request(request_id: int) -> dict:
+    """Approve an access request."""
+    db = SessionLocal()
+
+    try:
+        request = (
+            db.query(AccessRequest)
+            .filter(AccessRequest.id == request_id)
+            .first()
+        )
+
+        if not request:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Request not found: {request_id}",
+            )
+
+        request.status = "approved"
+        request.approved_by = "soc_admin"
+        request.approved_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "status": "approved",
+            "request_id": request_id,
+        }
+
+    finally:
+        db.close()
+
+
+@router.put("/access-requests/{request_id}/complete", tags=["Access Requests"])
+def complete_access_request(request_id: int) -> dict:
+    """Complete an approved access request."""
+    db = SessionLocal()
+
+    try:
+        request = (
+            db.query(AccessRequest)
+            .filter(AccessRequest.id == request_id)
+            .first()
+        )
+
+        if not request:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Request not found: {request_id}",
+            )
+
+        request.status = "completed"
+        request.completed_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "status": "completed",
+            "request_id": request_id,
+        }
+
+    finally:
+        db.close()
+
+
 def get_access_requests() -> list[dict]:
     """Return all access requests."""
     db = SessionLocal()

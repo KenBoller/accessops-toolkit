@@ -21,6 +21,8 @@ request = AccessRequest(
     system="vpn",
     action="grant",
     status="pending",
+    requested_by="soc_admin",
+    rt_ticket="RT-10001",
 )
 
 alert = Alert(
