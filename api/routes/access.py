@@ -2,7 +2,7 @@
 AccessOps Toolkit - Access API Routes
 -------------------------------------
 REST endpoints for system discovery, access checks, grants, removals,
-and platform summary stats.
+platform summary stats, and ticket CRUD operations.
 """
 
 from pathlib import Path
@@ -13,7 +13,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from database.db import SessionLocal
-from database.models import Ticket
+from database.models import Ticket, Incident, AccessRequest, Alert
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
@@ -61,6 +62,74 @@ class StatsResponse(BaseModel):
     tickets_open: int
     incidents_open: int
     access_requests_pending: int
+
+
+class TicketCreate(BaseModel):
+    title: str
+    owner: str | None = None
+    status: str = "Open"
+
+
+class TicketUpdate(BaseModel):
+    title: str | None = None
+    owner: str | None = None
+    status: str | None = None
+
+
+class TicketResponse(BaseModel):
+    id: int
+    title: str
+    owner: str | None
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class IncidentResponse(BaseModel):
+    id: int
+    title: str
+    severity: str | None
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class AccessRequestResponse(BaseModel):
+    id: int
+    username: str
+    system: str
+    action: str
+    status: str
+    created_at: str | None = None
+
+class AlertCreate(BaseModel):
+    source: str
+    severity: str = "Medium"
+    title: str
+    description: str | None = None
+    status: str = "Open"
+
+
+class AlertUpdate(BaseModel):
+    source: str | None = None
+    severity: str | None = None
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+
+
+class AlertResponse(BaseModel):
+    id: int
+    source: str
+    severity: str
+    title: str
+    description: str | None
+    status: str
+
+    class Config:
+        from_attributes = True
 
 
 def get_available_systems() -> dict[str, str]:
@@ -112,17 +181,10 @@ def get_stats() -> StatsResponse:
 
     data_dir = PROJECT_DIR / "data"
     access_state_file = data_dir / "access_state.json"
-    tickets_file = data_dir / "tickets.json"
-    incidents_file = data_dir / "incidents.json"
-    access_requests_file = data_dir / "access_requests.json"
 
     users_tracked = 0
-    tickets_open = 0
-    incidents_open = 0
-    access_requests_pending = 0
 
     access_state = load_json_file(access_state_file, {})
-
     tracked_users = set()
 
     if isinstance(access_state, dict):
@@ -132,47 +194,38 @@ def get_stats() -> StatsResponse:
 
     users_tracked = len(tracked_users)
 
-    ticket_data = load_json_file(tickets_file, {})
-    if isinstance(ticket_data, dict):
-        tickets_open = sum(
-            1
-            for ticket in ticket_data.get("tickets", [])
-            if ticket.get("status") == "open"
+    db = SessionLocal()
+
+    try:
+        tickets_open = db.query(Ticket).filter(Ticket.status == "Open").count()
+
+        incidents_open = (
+            db.query(Incident)
+            .filter(Incident.status.in_(["Open", "Active", "Triggered", "Investigating"]))
+            .count()
         )
 
-    incident_data = load_json_file(incidents_file, {})
-    if isinstance(incident_data, dict):
-        incidents_open = sum(
-            1
-            for incident in incident_data.get("incidents", [])
-            if incident.get("status") in {"open", "active", "triggered"}
+        access_requests_pending = (
+            db.query(AccessRequest)
+            .filter(AccessRequest.status.in_(["pending", "pending_approval"]))
+            .count()
         )
 
-    request_data = load_json_file(access_requests_file, {})
-    if isinstance(request_data, dict):
-        access_requests_pending = sum(
-            1
-            for request in request_data.get("requests", [])
-            if request.get("status") in {"pending", "pending_approval"}
+        return StatsResponse(
+            systems_available=len(systems),
+            users_tracked=users_tracked,
+            tickets_open=tickets_open,
+            incidents_open=incidents_open,
+            access_requests_pending=access_requests_pending,
         )
 
-    return StatsResponse(
-        systems_available=len(systems),
-        users_tracked=users_tracked,
-        tickets_open=tickets_open,
-        incidents_open=incidents_open,
-        access_requests_pending=access_requests_pending,
-    )
+    finally:
+        db.close()
 
 
 @router.get("/users/{username}/access", response_model=AccessCheckResponse)
 def get_user_access(username: str, system: str | None = None) -> AccessCheckResponse:
-    """
-    Check access for a user.
-
-    Optional query parameter:
-        ?system=jira
-    """
+    """Check access for a user. Optional query parameter: ?system=jira"""
     available_systems = get_available_systems()
 
     normalized_system = None
@@ -181,7 +234,6 @@ def get_user_access(username: str, system: str | None = None) -> AccessCheckResp
         normalized_system = validate_system(system)
 
     found_access = check_access(username, system=normalized_system)
-
     systems_checked = 1 if normalized_system else len(available_systems)
 
     return AccessCheckResponse(
@@ -199,11 +251,7 @@ def grant_user_access(
     mock: bool = True,
     dry_run: bool = False,
 ) -> AccessActionResponse:
-    """
-    Grant access to a user for one system.
-
-    Defaults to mock mode for portfolio-safe API usage.
-    """
+    """Grant access to a user for one system."""
     system_name = validate_system(system)
 
     grant_access(
@@ -230,11 +278,7 @@ def remove_user_access(
     mock: bool = True,
     dry_run: bool = False,
 ) -> AccessActionResponse:
-    """
-    Remove access from a user for one system.
-
-    Defaults to mock mode for portfolio-safe API usage.
-    """
+    """Remove access from a user for one system."""
     system_name = validate_system(system)
 
     remove_access(
@@ -254,23 +298,265 @@ def remove_user_access(
     )
 
 
-@router.get("/tickets", tags=["Tickets"])
-def get_tickets():
-
+@router.post("/tickets", response_model=TicketResponse, tags=["Tickets"])
+def create_ticket(ticket_data: TicketCreate) -> TicketResponse:
+    """Create a new ticket."""
     db = SessionLocal()
 
     try:
-        tickets = db.query(Ticket).all()
+        ticket = Ticket(
+            title=ticket_data.title,
+            owner=ticket_data.owner,
+            status=ticket_data.status,
+        )
+
+        db.add(ticket)
+        db.commit()
+        db.refresh(ticket)
+
+        return ticket
+
+    finally:
+        db.close()
+
+
+@router.get("/tickets", response_model=list[TicketResponse], tags=["Tickets"])
+def get_tickets() -> list[TicketResponse]:
+    """Return all tickets."""
+    db = SessionLocal()
+
+    try:
+        return db.query(Ticket).all()
+
+    finally:
+        db.close()
+
+
+@router.get("/tickets/{ticket_id}", response_model=TicketResponse, tags=["Tickets"])
+def get_ticket(ticket_id: int) -> TicketResponse:
+    """Return one ticket by ID."""
+    db = SessionLocal()
+
+    try:
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+
+        if not ticket:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ticket not found: {ticket_id}",
+            )
+
+        return ticket
+
+    finally:
+        db.close()
+
+
+@router.put("/tickets/{ticket_id}", response_model=TicketResponse, tags=["Tickets"])
+def update_ticket(ticket_id: int, ticket_data: TicketUpdate) -> TicketResponse:
+    """Update one ticket by ID."""
+    db = SessionLocal()
+
+    try:
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+
+        if not ticket:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ticket not found: {ticket_id}",
+            )
+
+        if ticket_data.title is not None:
+            ticket.title = ticket_data.title
+
+        if ticket_data.owner is not None:
+            ticket.owner = ticket_data.owner
+
+        if ticket_data.status is not None:
+            ticket.status = ticket_data.status
+
+        db.commit()
+        db.refresh(ticket)
+
+        return ticket
+
+    finally:
+        db.close()
+
+
+@router.delete("/tickets/{ticket_id}", tags=["Tickets"])
+def delete_ticket(ticket_id: int) -> dict:
+    """Delete one ticket by ID."""
+    db = SessionLocal()
+
+    try:
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+
+        if not ticket:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ticket not found: {ticket_id}",
+            )
+
+        db.delete(ticket)
+        db.commit()
+
+        return {
+            "status": "deleted",
+            "ticket_id": ticket_id,
+        }
+
+    finally:
+        db.close()
+
+
+@router.get("/incidents", response_model=list[IncidentResponse], tags=["Incidents"])
+def get_incidents() -> list[IncidentResponse]:
+    """Return all incidents."""
+    db = SessionLocal()
+
+    try:
+        return db.query(Incident).all()
+
+    finally:
+        db.close()
+
+
+@router.get(
+    "/access-requests",
+    response_model=list[AccessRequestResponse],
+    tags=["Access Requests"],
+)
+def get_access_requests() -> list[dict]:
+    """Return all access requests."""
+    db = SessionLocal()
+
+    try:
+        requests = db.query(AccessRequest).all()
 
         return [
             {
-                "id": ticket.id,
-                "title": ticket.title,
-                "owner": ticket.owner,
-                "status": ticket.status,
+                "id": req.id,
+                "username": req.username,
+                "system": req.system,
+                "action": req.action,
+                "status": req.status,
+                "created_at": (
+                    req.created_at.isoformat() if req.created_at else None
+                ),
             }
-            for ticket in tickets
+            for req in requests
         ]
+
+    finally:
+        db.close()
+
+@router.post("/alerts", response_model=AlertResponse, tags=["Alerts"])
+def create_alert(alert_data: AlertCreate) -> AlertResponse:
+    db = SessionLocal()
+
+    try:
+        alert = Alert(
+            source=alert_data.source,
+            severity=alert_data.severity,
+            title=alert_data.title,
+            description=alert_data.description,
+            status=alert_data.status,
+        )
+
+        db.add(alert)
+        db.commit()
+        db.refresh(alert)
+
+        return alert
+
+    finally:
+        db.close()
+
+
+@router.get("/alerts", response_model=list[AlertResponse], tags=["Alerts"])
+def get_alerts() -> list[AlertResponse]:
+    db = SessionLocal()
+
+    try:
+        return db.query(Alert).all()
+
+    finally:
+        db.close()
+
+
+@router.get("/alerts/{alert_id}", response_model=AlertResponse, tags=["Alerts"])
+def get_alert(alert_id: int) -> AlertResponse:
+    db = SessionLocal()
+
+    try:
+        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+
+        if not alert:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Alert not found: {alert_id}",
+            )
+
+        return alert
+
+    finally:
+        db.close()
+
+
+@router.put("/alerts/{alert_id}", response_model=AlertResponse, tags=["Alerts"])
+def update_alert(alert_id: int, alert_data: AlertUpdate) -> AlertResponse:
+    db = SessionLocal()
+
+    try:
+        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+
+        if not alert:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Alert not found: {alert_id}",
+            )
+
+        if alert_data.source is not None:
+            alert.source = alert_data.source
+        if alert_data.severity is not None:
+            alert.severity = alert_data.severity
+        if alert_data.title is not None:
+            alert.title = alert_data.title
+        if alert_data.description is not None:
+            alert.description = alert_data.description
+        if alert_data.status is not None:
+            alert.status = alert_data.status
+
+        db.commit()
+        db.refresh(alert)
+
+        return alert
+
+    finally:
+        db.close()
+
+
+@router.delete("/alerts/{alert_id}", tags=["Alerts"])
+def delete_alert(alert_id: int) -> dict:
+    db = SessionLocal()
+
+    try:
+        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+
+        if not alert:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Alert not found: {alert_id}",
+            )
+
+        db.delete(alert)
+        db.commit()
+
+        return {
+            "status": "deleted",
+            "alert_id": alert_id,
+        }
 
     finally:
         db.close()

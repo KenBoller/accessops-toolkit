@@ -51,3 +51,17 @@ class AccessRequest(Base):
     action = Column(String, nullable=False)
     status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Alert(Base):
+    """SOC alert or monitoring event."""
+
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source = Column(String, nullable=False)
+    severity = Column(String, nullable=False, default="Medium")
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="Open")
+    created_at = Column(DateTime, default=datetime.utcnow)
