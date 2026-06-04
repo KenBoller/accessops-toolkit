@@ -6,6 +6,7 @@
 ![Status](https://img.shields.io/badge/Status-Portfolio_Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Interface](https://img.shields.io/badge/Interface-CLI_+_GUI-orange)
+![Tests](https://github.com/Fll0yd/accessops-toolkit/actions/workflows/tests.yml/badge.svg)
 
 A Python-based Identity and Access Management (IAM) automation platform that simulates real-world onboarding, offboarding, access auditing, entitlement reviews, and access remediation workflows.
 
