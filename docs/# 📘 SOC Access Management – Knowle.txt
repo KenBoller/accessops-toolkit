@@ -1,0 +1,203 @@
+# 📘 SOC Access Management – Knowledge Transfer (KT)
+**Author:** Ken Boller  
+**Last Updated:** March 17th 2025  
+**Audience:** SOC Engineering, DevOps, Security  
+
+This document provides a full overview of the SOC Access Management project — including file structure, systems integrated, scripts updated/created, and how to test or run the project in production. It also outlines what's been completed, what remains, and how to maintain/extend the toolset during the author’s leave.
+
+---
+
+## 🧭 Project Overview
+
+The **SOC Access Management Toolkit** allows the Security Operations Center (SOC) to manage user access across 20+ internal systems using a unified process:
+
+- ✅ **CLI Tool** (`access_management.py`)
+- ✅ **GUI Wrapper** (`soctool.py`)
+- ✅ Modular per-system scripts (located in `Systems/UIs/` and `Systems/DBs/`)
+- 🔐 Credential integration pending (via **SOC Cloud Workstation**)
+
+---
+
+## 📁 Repository Structure
+
+Path:  
+`https://github.com/marchex-emu/socbot/tree/restructuring/SocTool`
+
+### Folder Breakdown:
+``` bash
+SocTool/
+├── access_management.py      # CLI entry point for checking, granting, removing access
+├── soctool.py                # GUI wrapper that calls the CLI interactively
+├── Systems/
+│   ├── UIs/                  # System integration scripts (API-based or UI tools)
+│   │   ├── aws.py
+│   │   ├── jira.py
+│   │   ├── grafana.py
+│   │   ├── adtrack.py
+│   │   ├── ...
+│   └── DBs/                  # DB-integrated systems (Oracle, Snowflake, etc.)
+│       ├── nimui.py
+│       ├── snowflake.py
+│       └── ...
+├── Utils/
+│   └── rt_api.py             # RT ticket comment / integration helper
+├── Logs/
+│   └── access_management.log # Auto-generated log of actions and outputs
+└── README.md                 # (Planned) Project overview and onboarding guide
+```
+
+---
+
+## 🧹 What Was Removed
+
+- ❌ Legacy Python 2 compatibility
+- ❌ Disconnected system integrations that no longer existed or applied
+- ❌ Secrets directory and the use of Python scripts with sensitive info such as secrets.py and config.py
+
+### ❌ Removed System UI Scripts No Longer Needed:
+| System               
+|----------------------
+| ❌ Avenger
+| ❌ IPPlan
+| ❌ Jingleaccess   
+| ❌ Last3
+| ❌ MI5
+| ❌ Microsite
+| ❌ nismaps 
+| ❌ Slack
+| ❌ Tableau
+| ❌ Zenoss
+| ❌ ZenossSom1
+
+---
+
+## 🔧 What Was Fixed
+
+- ✅ Converted **all legacy scripts** from Python 2 to Python 3
+- ✅ Standardized all system scripts to accept the same `main(user, creds)` pattern
+- ✅ Added logging, subprocess handling, and mocking logic for safe testability
+- ✅ Fixed deprecated subprocess usage and encoding issues
+- ✅ Fixed the overall directory structure to be more organized and make more sense.
+(to me anyway)
+
+---
+
+## 🧪 What Was Added
+
+### ✅ Major Functional Additions
+- `soctool.py` GUI (Tkinter)
+- Unified CLI: `access_management.py`
+- Full support for `check`, `grant`, and `remove` modes across all systems
+- Dynamic subprocess calling of scripts via file discovery
+- `MOCK_MODE` toggle for testing purposes
+
+### ✅ New System UI Scripts Written (from scratch or updated):
+
+| System               | Status   |
+|----------------------|----------|
+| ADTrack              | ✅ Updated |
+| AWS IAM              | ✅ Updated |
+| Grafana              | ✅ Updated |
+| JIRA                 | ✅ Updated |
+| NimUI (Oracle)       | ✅ Updated |
+| PagerDuty            | ✅ Updated |
+| RT Tickets           | ✅ Updated |
+| Auth0                | ✅ New     |
+| AFR                  | ✅ New     |
+| Azure Portal         | ✅ New     |
+| Call Scoring         | ✅ New     |
+| Chef (General)       | ✅ New     |
+| Chef DataBag         | ✅ New     |
+| Engage / Spotlight   | ✅ New     |
+| GitHub               | ✅ New     |
+| Marketing Edge       | ✅ New     |
+| Nexus / ToolsNexus   | ✅ New     |
+| Pulley               | ✅ New     |
+| Sentry               | ✅ New     |
+| Snowflake            | ✅ New     |
+
+---
+
+## 🛠️ How to Run It
+
+### 🔍 MOCK Mode (Testing Only)
+Used to safely simulate system behavior without making real API calls or DB changes.
+
+# Run CLI with mock flag
+```bash
+python access_management.py --mock
+```
+
+# Inside any script:
+```bash
+creds = {
+  "operatorUN": "yourldap",
+  "accessChoice": "check/remove/grant",
+  "MOCK_MODE": True
+}
+```
+
+# 🧑‍💻 Production Mode (Post-Setup) 
+Once credentials are configured on the SOC Cloud Workstation: 
+```bash 
+# From the workstation, run the CLI version with: 
+python access_management.py 
+
+# Or launch the GUI: 
+python soctool.py 
+```
+The GUI wraps the CLI, handling input validation and passing the `--mock` flag automatically as needed.
+
+# 🧰 Credentials & Authentication 
+## Current Plan: 
+Use the SOC Cloud Workstation VM at:
+```bash 
+soc1.az-eus-vws.marchex.com
+```
+as the secure host for: 
+- LDAP credentials 
+- API tokens (Grafana, JIRA, Auth0, PagerDuty, etc.) 
+- DB passwords (Oracle, Snowflake) 
+
+> These will NOT be committed to source or hardcoded. Use secret.get_secret() to retrieve locally-stored credentials.
+
+# 🚧 What’s Left to Complete 
+| Task              | Status   |
+|-------------------|----------|
+| Create local secret store | 🔄 In Progress |
+| Secure the SOC VM access | ✅ Done |
+| Test scripts w/ real creds | 🚫 Blocked |
+| Add README.md | 🕒 Planned |
+| Final prod test pass | 🚫 Blocked |
+
+
+# 📎 Sample CLI Usage 
+```bash 
+# Check a user's access 
+python access_management.py check jdoe 
+
+# Remove access with mock mode 
+python access_management.py remove jdoe --mock 
+
+# Grant access with RT ticket 
+python access_management.py grant jdoe --rt_ticket 123456 
+```
+# 👀 Visibility & Audit 
+- All actions are logged to Logs/access_management.log 
+- RT ticket integration via rt_api.py supports adding comments or triggering escalations 
+- Each script logs its own activity independently 
+
+# 🔐 Security Notes 
+- No secrets are ever stored in GitHub or in the codebase 
+- MOCK_MODE is default unless explicitly overridden 
+- Production credentials are stored only on the Cloud Workstation and Bitwarden 
+- Scripts follow principle of least privilege when interacting with systems 
+
+
+# 🙋 Support During Leave
+ Ken will be intermittently available during paternity leave. Ping via Teams or add questions to the ADO board and tag `@kboller`.
+
+
+
+
+does this look ok?

@@ -1,0 +1,26 @@
+Daily Update for Matt – SOC Separations Project
+Summary of Work Completed Today:
+Reviewed & Audited the Separations Scripts
+Examined all scripts in the Separations directory to determine which ones are still relevant.
+Cross-referenced with the SOC SOP uiAccess documentation and feedback from Dean.
+Identified systems that need to be added and deprecated ones that can be removed.
+Updated the Separations Access List
+Cleaned up separations.py to only include active systems.
+Removed outdated services like Zenoss, Slack, Tableau, IPPlan, and TACACS.
+Identified missing systems like Azure DevOps, GitHub, OpenVPN, and Snowflake that need scripts.
+Refactored separations.py for Modernization
+Converted to Python 3 (fixed raw_input(), print statements, etc.).
+Implemented structured logging instead of print() for better debugging.
+Added better error handling for missing modules and LDAP authentication failures.
+Validated user inputs to prevent incorrect selections (e.g., "Remove" vs. "Check").
+Improved modularization to make future maintenance easier.
+Explored the SOCBot Repo for Dependencies
+Investigated other scripts in scripts/, lib/python/, and powershellScripts/.
+Found potential dependencies like utils.py and secret.py that are used across multiple scripts.
+Identified unrelated scripts that can likely be removed to declutter the workspace.
+Next Steps:
+Start creating new separation scripts for missing systems (Azure DevOps, GitHub, OpenVPN, etc.).
+Remove unnecessary scripts from Separations/ and clean up the repo.
+Investigate the feasibility of automating onboarding alongside separations.
+
+Let me know if you need anything else before I finalize and push updates.

@@ -1,0 +1,4365 @@
+now that the access_management.py script successfully authenticates ldap what the script should do is iterate thru all of the individual system UI and DB scripts and check, grant or remove user access from each one so i believe what we should do now is update the creds.json file with SOC login credentials for each system
+{
+  "_LDAP_USER": "marchex\\kboller",
+  "_LDAP_PASS": "$martLemur15",
+  "_AdTrack_USER": "soc@marchex.com",
+  "_AdTrack_PASS": "ca8Ubr&St$6u",
+//  "_ORACLE_USER": "socuser",
+//  "_ORACLE_PASS": "supersecurepass"
+}
+
+the Jira api key should not be required to check adtrack access, those are 2 separate systems...
+
+
+
+
+"""
+SOC Access Management Tool (CLI Only)
+---------------------------------------------------
+✅ CLI-based access management for SOC.
+✅ Secure LDAP authentication via Azure Key Vault.
+✅ Interactive access management (Check → Remove/Grant).
+✅ Independent from GUI (SOC Tool calls this script).
+"""
+
+#Example CLI Usage
+#python access_management.py check kboller
+#python access_management.py grant kboller --rt_ticket 12345
+#python access_management.py remove kboller --mock
+
+import argparse
+import logging
+import os
+import subprocess
+import sys
+import getpass
+from datetime import datetime
+from ldap3 import Server, Connection, NTLM, ALL, core, SIMPLE
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Utils"))
+from get_secrets import get_secret
+
+
+# ✅ Ensure UTF-8 encoding to prevent errors
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+# ✅ Set up base directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Get current script location
+SYSTEMS_DIR = os.path.join(BASE_DIR, "Systems", "UIs")  # Locate Systems/UIs folder
+LOG_DIR = os.path.join(BASE_DIR, "Logs")  # Correct path to Logs/
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# ✅ Set up logging
+LOG_FILE = os.path.join(LOG_DIR, "access_management.log")
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+required_keys = ["_JIRA_API_KEY", "_GRAFANA_API_KEY"]
+for key in required_keys:
+    if not get_secret(key):
+        print(f"⚠️ Missing required secret: {key}")
+        sys.exit(1)
+
+
+# ✅ Attempt to import rt_api.py (for RT ticket updates)
+try:
+    sys.path.insert(0, os.path.join(BASE_DIR, "Utils"))
+    from rt_api import add_comment
+except ModuleNotFoundError:
+    def add_comment(ticket, comment):
+        logging.warning(f"RT API not found. Skipping RT ticket update: {ticket}.")
+        print(f"⚠️ RT API not found. Skipping RT ticket update: {ticket}.")
+
+
+def authenticate_ldap(username, password):
+    ldap_server = "ldap.oci-iad-prd.marchex.com"  # Using the OpenLDAP host Tim referenced
+    user_dn = f"uid={username},ou=users,dc=marchex,dc=com"
+
+    print(f"🔐 Trying LDAP bind as DN: {user_dn} to {ldap_server}")
+
+    try:
+        server = Server(ldap_server, port=636, use_ssl=True, get_info=ALL)
+        conn = Connection(
+            server,
+            user=user_dn,
+            password=password,
+            authentication=SIMPLE
+        )
+
+        if not conn.bind():
+            print(f"❌ LDAP auth failed: {conn.result['description']}")
+            return False
+
+        print(f"✅ Authenticated to LDAP as {user_dn}")
+        return True
+
+    except Exception as e:
+        print(f"❌ LDAP auth exception: {e}")
+        return False
+
+
+# ✅ Prompt for missing inputs
+def prompt_if_missing(value, prompt_text):
+    """Prompt user for input if a value is missing."""
+    return value if value else input(prompt_text).strip()
+
+
+# ✅ Check user access
+def check_user_access(target_user):
+    """Checks all systems where the user has access."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"🔹 Checking access for {target_user} at {timestamp}")
+    logging.info(f"Checking access for {target_user}")
+
+    access_list = []
+
+    if not os.path.exists(SYSTEMS_DIR):
+        print("❌ Error: 'Systems/UIs' directory not found.")
+        logging.error("Systems directory missing.")
+        sys.exit(1)
+
+
+    for script in os.listdir(SYSTEMS_DIR):
+        if script.endswith(".py") and script.startswith("check_"):
+            system_name = script.replace("check_", "").replace(".py", "").capitalize()
+            script_path = os.path.join(SYSTEMS_DIR, script)
+
+            try:
+                cmd = ["python", script_path, target_user]
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+                stdout_output, stderr_output = process.communicate()
+
+                if stdout_output.strip():
+                    print(f"✅ {system_name}: {stdout_output.strip()}")
+                    access_list.append(system_name)
+
+                if stderr_output.strip():
+                    print(f"⚠️ {system_name} Error: {stderr_output.strip()}")
+                    logging.error(f"{system_name} Error: {stderr_output.strip()}")
+
+            except Exception as e:
+                print(f"❌ {system_name}: Error checking access - {e}")
+                logging.error(f"Error checking access for {system_name}: {e}")
+
+    return access_list
+
+# ✅ Remove access from a system
+def remove_access(target_user, system_name, mock_mode):
+    """Removes access from the selected system."""
+    script_path = os.path.join(SYSTEMS_DIR, f"remove_{system_name.lower()}.py")
+
+    if os.path.exists(script_path):
+        cmd = ["python", script_path, target_user]
+        if mock_mode:
+            cmd.append("--mock")
+
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Removed access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Remove script for {system_name} not found.")
+
+# ✅ Grant access to a system
+def grant_access(target_user, system_name, mock_mode):
+    """Grants access to the selected system."""
+    script_path = os.path.join(SYSTEMS_DIR, f"grant_{system_name.lower()}.py")
+
+    if os.path.exists(script_path):
+        cmd = ["python", script_path, target_user]
+        if mock_mode:
+            cmd.append("--mock")
+
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Granted access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Grant script for {system_name} not found.")
+
+def interactive_access_management(mock_mode=False):
+    """Runs the interactive access management process."""
+
+    # ✅ Prompt for LDAP credentials interactively
+    ldap_user = prompt_if_missing(None, "Enter your LDAP username: ")
+    ldap_pass = getpass.getpass("Enter your LDAP password: ")
+
+    # ✅ Authenticate LDAP before proceeding
+    if not authenticate_ldap(ldap_user, ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+
+    # ✅ Get the target LDAP username
+    target_user = prompt_if_missing(None, "Enter the LDAP username of the target user: ")
+
+    # ✅ Check access first
+    access_list = check_user_access(target_user)
+
+    if access_list:
+        print("\n🔹 The user currently has access to these systems:")
+        for i, system in enumerate(access_list, start=1):
+            print(f"  {i}. {system}")
+
+        # ✅ Ask if access should be removed
+        remove_choice = input("\nWould you like to remove access from any of these systems? (yes/no): ").strip().lower()
+        if remove_choice == "yes":
+            system_to_remove = prompt_if_missing(None, "Enter the system name to remove access from: ")
+            if system_to_remove in access_list:
+                remove_access(target_user, system_to_remove)
+            else:
+                print("❌ Invalid selection. System not found in the access list.")
+
+    # ✅ Ask if access should be granted
+    grant_choice = input("\nWould you like to grant access to a new system? (yes/no): ").strip().lower()
+    if grant_choice == "yes":
+        system_to_grant = prompt_if_missing(None, "Enter the system name to grant access to: ")
+        grant_access(target_user, system_to_grant)
+
+    print("\n🔹 Access management completed.")
+
+# ✅ CLI Argument Parsing
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Manage SOC user access with LDAP authentication.")
+    parser.add_argument("action", choices=["check", "grant", "remove"])
+    parser.add_argument("target_user", help="Target LDAP username to manage")
+    parser.add_argument("--ldap_user", required=True, help="Your LDAP username")
+    parser.add_argument("--ldap_pass", required=True, help="Your LDAP password")
+    parser.add_argument("--rt_ticket", help="RT ticket number (optional)")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode")
+
+    args = parser.parse_args()
+
+    # Authenticate before proceeding
+    if not authenticate_ldap(args.ldap_user, args.ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+    # Route the action
+    if args.action == "check":
+        check_user_access(args.target_user)
+    elif args.action == "grant":
+        system_to_grant = prompt_if_missing(None, "Enter system to grant access to: ")
+        grant_access(args.target_user, system_to_grant, args.mock)
+    elif args.action == "remove":
+        system_to_remove = prompt_if_missing(None, "Enter system to remove access from: ")
+        remove_access(args.target_user, system_to_remove, args.mock)
+"""
+SOC Access Management Tool (CLI Only)
+---------------------------------------------------
+✅ CLI-based access management for SOC.
+✅ Secure LDAP authentication via Azure Key Vault.
+✅ Interactive access management (Check → Remove/Grant).
+✅ Independent from GUI (SOC Tool calls this script).
+"""
+
+#Example CLI Usage
+#python access_management.py check kboller
+#python access_management.py grant kboller --rt_ticket 12345
+#python access_management.py remove kboller --mock
+
+import argparse
+import logging
+import os
+import subprocess
+import sys
+import getpass
+from datetime import datetime
+from ldap3 import Server, Connection, NTLM, ALL, core, SIMPLE
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Utils"))
+from get_secrets import get_secret
+
+
+# ✅ Ensure UTF-8 encoding to prevent errors
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+# ✅ Set up base directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Get current script location
+SYSTEMS_DIR = os.path.join(BASE_DIR, "Systems", "UIs", "DBs")  # Locate Systems/UIs and 'System/DBs' folder
+LOG_DIR = os.path.join(BASE_DIR, "Logs")  # Correct path to Logs/
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# ✅ Set up logging
+LOG_FILE = os.path.join(LOG_DIR, "access_management.log")
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+# ✅ Attempt to import rt_api.py (for RT ticket updates)
+try:
+    sys.path.insert(0, os.path.join(BASE_DIR, "Utils"))
+    from rt_api import add_comment
+except ModuleNotFoundError:
+    def add_comment(ticket, comment):
+        logging.warning(f"RT API not found. Skipping RT ticket update: {ticket}.")
+        print(f"⚠️ RT API not found. Skipping RT ticket update: {ticket}.")
+
+
+def authenticate_ldap(username, password):
+    ldap_server = "ldap.oci-iad-prd.marchex.com"  # Using the OpenLDAP host Tim referenced
+    user_dn = f"uid={username},ou=users,dc=marchex,dc=com"
+
+    print(f"🔐 Trying LDAP bind as DN: {user_dn} to {ldap_server}")
+
+    try:
+        server = Server(ldap_server, port=636, use_ssl=True, get_info=ALL)
+        conn = Connection(
+            server,
+            user=user_dn,
+            password=password,
+            authentication=SIMPLE
+        )
+
+        if not conn.bind():
+            print(f"❌ LDAP auth failed: {conn.result['description']}")
+            return False
+
+        print(f"✅ Authenticated to LDAP as {user_dn}")
+        return True
+
+    except Exception as e:
+        print(f"❌ LDAP auth exception: {e}")
+        return False
+
+
+# ✅ Prompt for missing inputs
+def prompt_if_missing(value, prompt_text):
+    """Prompt user for input if a value is missing."""
+    return value if value else input(prompt_text).strip()
+
+
+# ✅ Check user access
+def check_user_access(target_user):
+    """Checks all systems where the user has access."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"🔹 Checking access for {target_user} at {timestamp}")
+    logging.info(f"Checking access for {target_user}")
+
+    access_list = []
+
+    if not os.path.exists(SYSTEMS_DIR):
+        print("❌ Error: 'Systems/UIs' directory not found.")
+        logging.error("Systems directory missing.")
+        sys.exit(1)
+
+    for script in os.listdir(SYSTEMS_DIR):
+        if script.endswith(".py"):
+            system_name = script.replace(".py", "").capitalize()
+            script_path = os.path.join(SYSTEMS_DIR, script)
+
+            try:
+                cmd = ["python", script_path, "check", target_user]
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+                stdout_output, stderr_output = process.communicate()
+
+                if stdout_output.strip():
+                    print(f"✅ {system_name}: {stdout_output.strip()}")
+                    access_list.append(system_name)
+
+                if stderr_output.strip():
+                    print(f"⚠️ {system_name} Error: {stderr_output.strip()}")
+                    logging.error(f"{system_name} Error: {stderr_output.strip()}")
+
+            except Exception as e:
+                print(f"❌ {system_name}: Error checking access - {e}")
+                logging.error(f"Error checking access for {system_name}: {e}")
+
+    return access_list
+
+
+# ✅ Remove access from a system
+def remove_access(target_user, system_name, mock_mode):
+    """Removes access from the selected system."""
+    script_path = os.path.join(SYSTEMS_DIR, f"{system_name.lower()}.py")
+    if os.path.exists(script_path):
+        cmd = ["python", script_path, "remove", target_user]
+        if mock_mode:
+            cmd.append("--mock")
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Removed access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Remove script for {system_name} not found.")
+
+# ✅ Grant access to a system
+def grant_access(target_user, system_name, mock_mode):
+    """Grants access to the selected system."""
+    script_path = os.path.join(SYSTEMS_DIR, f"{system_name.lower()}.py")
+    if os.path.exists(script_path):
+        cmd = ["python", script_path, "grant", target_user]
+        if mock_mode:
+            cmd.append("--mock")
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Granted access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Grant script for {system_name} not found.")
+
+def interactive_access_management(mock_mode=False):
+    """Runs the interactive access management process."""
+
+    # ✅ Prompt for LDAP credentials interactively
+    ldap_user = prompt_if_missing(None, "Enter your LDAP username: ")
+    ldap_pass = getpass.getpass("Enter your LDAP password: ")
+
+    # ✅ Authenticate LDAP before proceeding
+    if not authenticate_ldap(ldap_user, ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+
+    # ✅ Get the target LDAP username
+    target_user = prompt_if_missing(None, "Enter the LDAP username of the target user: ")
+
+    # ✅ Check access first
+    access_list = check_user_access(target_user)
+
+    if access_list:
+        print("\n🔹 The user currently has access to these systems:")
+        for i, system in enumerate(access_list, start=1):
+            print(f"  {i}. {system}")
+
+        # ✅ Ask if access should be removed
+        remove_choice = input("\nWould you like to remove access from any of these systems? (yes/no): ").strip().lower()
+        if remove_choice == "yes":
+            system_to_remove = prompt_if_missing(None, "Enter the system name to remove access from: ")
+            if system_to_remove in access_list:
+                remove_access(target_user, system_to_remove)
+            else:
+                print("❌ Invalid selection. System not found in the access list.")
+
+    # ✅ Ask if access should be granted
+    grant_choice = input("\nWould you like to grant access to a new system? (yes/no): ").strip().lower()
+    if grant_choice == "yes":
+        system_to_grant = prompt_if_missing(None, "Enter the system name to grant access to: ")
+        grant_access(target_user, system_to_grant)
+
+    print("\n🔹 Access management completed.")
+
+# ✅ CLI Argument Parsing
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Manage SOC user access with LDAP authentication.")
+    parser.add_argument("action", choices=["check", "grant", "remove"])
+    parser.add_argument("target_user", help="Target LDAP username to manage")
+    parser.add_argument("--ldap_user", required=True, help="Your LDAP username")
+    parser.add_argument("--ldap_pass", required=True, help="Your LDAP password")
+    parser.add_argument("--rt_ticket", help="RT ticket number (optional)")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode")
+
+    args = parser.parse_args()
+
+    # Authenticate before proceeding
+    if not authenticate_ldap(args.ldap_user, args.ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+    # Route the action
+    if args.action == "check":
+        check_user_access(args.target_user)
+    elif args.action == "grant":
+        system_to_grant = prompt_if_missing(None, "Enter system to grant access to: ")
+        grant_access(args.target_user, system_to_grant, args.mock)
+    elif args.action == "remove":
+        system_to_remove = prompt_if_missing(None, "Enter system to remove access from: ")
+        remove_access(args.target_user, system_to_remove, args.mock)
+
+
+
+
+# Example usage
+# python adtrack.py check kboller@marchex.com
+# python adtrack.py grant kboller@marchex.com "Kenneth Boller" --staff
+# python adtrack.py remove kboller@marchex.com
+
+
+import logging
+import psycopg2
+import os
+import sys
+from get_secrets import get_secret
+
+
+# ✅ Setup logging
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+
+DB_CONFIG = {
+    "dbname": "adtrack_ro",
+    "host": "vspool.som1.marchex.com",
+    "port": 5432,
+    "user": get_secret("_AdTrack_USER"),
+    "password": get_secret("_AdTrack_PASS")
+}
+
+
+
+def get_db_connection():
+    """Establish a database connection to AdTrack."""
+    if not DB_CONFIG["user"] or not DB_CONFIG["password"]:
+        logging.error("❌ Incorrect User or Password.")
+        return None
+
+    try:
+        return psycopg2.connect(**DB_CONFIG)
+    except Exception as e:
+        logging.error(f"❌ Database connection failed: {e}")
+        return None
+
+def check_adtrack_access(user, vendor_email=None):
+    """Check if a user has AdTrack UI access."""
+    search_param = vendor_email or f"{user}@marchex.com"
+
+    conn = get_db_connection()
+    if not conn:
+        error_msg = "❌ Database connection failed: Could not establish connection."
+        logging.error(error_msg)
+        print(error_msg)  # ✅ Ensure this prints so checkaccess.py captures it
+        sys.stdout.flush()
+        return None
+
+    query = "SELECT email FROM at_user WHERE email ILIKE %s AND status != 'disabled'"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (search_param,))
+            result = cur.fetchall()
+
+        conn.close()
+
+        if result:
+            output = f"✅ {user} has AdTrack UI access: {result}"
+        else:
+            output = f"❌ {user} does NOT have AdTrack UI access."
+
+        logging.info(output)
+        print(output)  # ✅ Ensure this prints so it's visible in checkaccess.py
+        sys.stdout.flush()
+        return result
+
+    except Exception as e:
+        error_msg = f"❌ Database query failed: {e}"
+        logging.error(error_msg)
+        print(error_msg)  # ✅ Ensure errors are visible
+        sys.stdout.flush()
+        return None
+
+# ✅ GRANT Access Function
+def grant_adtrack_access(user_email, real_name, is_staff=False):
+    """Grants AdTrack UI access by inserting a user into the database."""
+    conn = get_db_connection()
+    if not conn:
+        print("❌ Failed to connect to the AdTrack database.")
+        return
+
+    try:
+        with conn.cursor() as cur:
+            # Example insert — customize based on your DB schema
+            cur.execute("""
+                INSERT INTO at_user (email, name, status, staff_level)
+                VALUES (%s, %s, 'active', %s)
+                ON CONFLICT (email) DO UPDATE SET status = 'active'
+            """, (user_email, real_name, 'staff' if is_staff else 'user'))
+            conn.commit()
+
+        print(f"✅ Granted access to {user_email} in AdTrack.")
+        logging.info(f"✅ Granted access to {user_email} (staff={is_staff})")
+
+    except Exception as e:
+        logging.error(f"❌ Failed to grant access to {user_email}: {e}")
+        print(f"❌ Grant failed for {user_email}: {e}")
+    finally:
+        conn.close()
+
+# ✅ REMOVE Access Function
+def remove_adtrack_access(user_email):
+    """Disables an AdTrack user's account in the database."""
+    conn = get_db_connection()
+    if not conn:
+        print("❌ Failed to connect to the AdTrack database.")
+        return
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE at_user
+                SET status = 'disabled'
+                WHERE email ILIKE %s
+            """, (user_email,))
+            conn.commit()
+
+        print(f"✅ Removed access for {user_email} in AdTrack.")
+        logging.info(f"✅ Disabled access for {user_email}.")
+
+    except Exception as e:
+        logging.error(f"❌ Failed to remove access for {user_email}: {e}")
+        print(f"❌ Remove failed for {user_email}: {e}")
+    finally:
+        conn.close()
+
+# ✅ Main Execution Block
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: python adtrack.py <check|grant|remove> <user> [real_name (if granting)] [--staff]")
+        sys.exit(1)
+
+    action = sys.argv[1].lower()
+    user = sys.argv[2]
+    real_name = sys.argv[3] if len(sys.argv) > 3 else None
+    is_staff = "--staff" in sys.argv
+
+    if action == "check":
+        check_adtrack_access(user)
+    elif action == "grant":
+        if not real_name:
+            print("❌ Error: Real name required to grant access.")
+            sys.exit(1)
+        grant_adtrack_access(user, real_name, is_staff)
+    elif action == "remove":
+        remove_adtrack_access(user)
+    else:
+        print("❌ Invalid action. Use 'check', 'grant', or 'remove'.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+
+
+how do i save and exit the credentials.txt and will Cursor be able to reconnect to the Workstation VM now?
+the attached image is what my vpn looks like on my local machine
+
+
+
+
+kboller@soc1:~$ cat -A /home/kboller/credentials.txt
+kboller@marchex.com$
+$martLemur15$
+kboller@soc1:~$ chmod 600 /home/kboller/credentials.txt
+kboller@soc1:~$ sudo openvpn --config /home/kboller/marchex.ovpn --auth-user-pass /home/kboller/credentials.txt
+2025-04-04 15:40:55 DEPRECATED OPTION: --cipher set to 'AES-256-CBC' but missing in --data-ciphers (AES-256-GCM:AES-128-GCM). Future OpenVPN version will ignore --cipher for cipher negotiations. Add 'AES-256-CBC' to --data-ciphers or change --cipher 'AES-256-CBC' to --data-ciphers-fallback 'AES-256-CBC' to silence this warning.
+2025-04-04 15:40:55 OpenVPN 2.5.11 x86_64-pc-linux-gnu [SSL (OpenSSL)] [LZO] [LZ4] [EPOLL] [PKCS11] [MH/PKTINFO] [AEAD] built on Sep 17 2024
+2025-04-04 15:40:55 library versions: OpenSSL 3.0.2 15 Mar 2022, LZO 2.10
+2025-04-04 15:40:55 Outgoing Control Channel Authentication: Using 256 bit message hash 'SHA256' for HMAC authentication
+2025-04-04 15:40:55 Incoming Control Channel Authentication: Using 256 bit message hash 'SHA256' for HMAC authentication
+2025-04-04 15:40:55 TCP/UDP: Preserving recently used remote address: [AF_INET]74.80.182.136:1194
+2025-04-04 15:40:55 Socket Buffers: R=[1048576->1048576] S=[212992->212992]
+2025-04-04 15:40:55 NOTE: setsockopt TCP_NODELAY=1 failed
+2025-04-04 15:40:55 UDP link local: (not bound)
+2025-04-04 15:40:55 UDP link remote: [AF_INET]74.80.182.136:1194
+2025-04-04 15:40:55 TLS: Initial packet from [AF_INET]74.80.182.136:1194, sid=62304cbd 901df716
+2025-04-04 15:40:55 WARNING: this configuration may cache passwords in memory -- use the auth-nocache option to prevent this
+2025-04-04 15:40:55 net_route_v4_best_gw query: dst 0.0.0.0
+2025-04-04 15:40:55 net_route_v4_best_gw result: via 10.72.197.1 dev eth0
+2025-04-04 15:40:57 VERIFY OK: depth=1, CN=CloudVPN Prod CA
+2025-04-04 15:40:57 VERIFY KU OK
+2025-04-04 15:40:57 Validating certificate extended key usage
+2025-04-04 15:40:57 ++ Certificate has EKU (str) TLS Web Server Authentication, expects TLS Web Server Authentication
+2025-04-04 15:40:57 VERIFY EKU OK
+2025-04-04 15:40:57 VERIFY OK: depth=0, CN=us-mci-dc1-b1.cloud.openvpn.net
+2025-04-04 15:40:58 Control Channel: TLSv1.3, cipher TLSv1.3 TLS_AES_256_GCM_SHA384, peer certificate: 2048 bit RSA, signature: RSA-SHA256
+2025-04-04 15:40:58 [us-mci-dc1-b1.cloud.openvpn.net] Peer Connection Initiated with [AF_INET]74.80.182.136:1194
+2025-04-04 15:40:58 AUTH: Received control message: AUTH_FAILED
+2025-04-04 15:40:58 SIGTERM[soft,auth-failure] received, process exiting
+kboller@soc1:~$
+
+
+
+
+should the open vpn username maybe be just kboller? or maybe kboller@marchex? instead of kboller@marchex.com?
+4 weeks later i still have no responce from Swarup to the questions i asked him so i touched base with him again this morning and this is the responce i got today
+
+
+remind me how we did this before using putty
+2025-05-07 12:49:52,066 - INFO - Checking access for kboller
+2025-05-07 12:49:52,184 - ERROR - Pulley Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/pulley.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:52,302 - ERROR - Github Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/github.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:52,772 - ERROR - Jira Error: 2025-05-07 12:49:52,760 - ERROR - JIRA API request failed: 401 Client Error:  for url: https://jira.marchex.com/rest/api/latest/user?username=kboller
+2025-05-07 12:49:52,849 - ERROR - Snowflake Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/snowflake.py", line 2, in <module>
+    import snowflake.connector
+  File "/home/kboller/socbot/SocTool/Systems/UIs/snowflake.py", line 2, in <module>
+    import snowflake.connector
+ModuleNotFoundError: No module named 'snowflake.connector'; 'snowflake' is not a package
+2025-05-07 12:49:52,970 - ERROR - Azureportal Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/azureportal.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:53,058 - ERROR - Adtrack Error: 2025-05-07 12:49:53,051 - ERROR - ❌ Database connection failed: connection to server at "vspool.som1.marchex.com" (10.30.253.159), port 5432 failed: No route to host
+	Is the server running on that host and accepting TCP/IP connections?
+
+2025-05-07 12:49:53,051 - ERROR - ❌ Database connection failed: Could not establish connection.
+2025-05-07 12:49:53,178 - ERROR - Pagerduty Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/pagerduty.py", line 4, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:53,298 - ERROR - Callscoring Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/callscoring.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:53,659 - ERROR - Grafana Error: 2025-05-07 12:49:53,647 - ERROR - ❌ Failed to retrieve Grafana users: HTTPSConnectionPool(host='grafana.marchex.com', port=443): Max retries exceeded with url: /api/org/users (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x74629e5b96c0>: Failed to establish a new connection: [Errno 111] Connection refused'))
+2025-05-07 12:49:53,693 - ERROR - Aws Error: 2025-05-07 12:49:53,689 - ERROR - ❌ AWS CLI is not installed. Please install it using 'pip install awscli'.
+2025-05-07 12:49:53,812 - ERROR - Nexus Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/nexus.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:53,932 - ERROR - Engage Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/engage.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:54,007 - ERROR - Rt_tickets Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/rt_tickets.py", line 2, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:54,082 - ERROR - Nimui Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/nimui.py", line 3, in <module>
+    import cx_Oracle
+ModuleNotFoundError: No module named 'cx_Oracle'
+2025-05-07 12:49:54,201 - ERROR - Sentry Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/sentry.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:54,320 - ERROR - Chefdatabag Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/chefdatabag.py", line 5, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:54,439 - ERROR - Marketingedge Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/marketingedge.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:54,558 - ERROR - Auth0 Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/auth0.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:54,634 - ERROR - Chef Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/chef.py", line 5, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:54,709 - ERROR - Afr Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/afr.py", line 2, in <module>
+    import cx_Oracle
+ModuleNotFoundError: No module named 'cx_Oracle'
+2025-05-07 12:49:54,785 - ERROR - Grant_oracle_db Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/grant_oracle_db.py", line 3, in <module>
+    import cx_Oracle
+ModuleNotFoundError: No module named 'cx_Oracle'
+2025-05-07 12:49:54,869 - ERROR - Remove_postgres_db Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/remove_postgres_db.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:54,952 - ERROR - Grant_postgres_db Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/grant_postgres_db.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+2025-05-07 12:49:55,027 - ERROR - Check_oracle_db Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/check_oracle_db.py", line 3, in <module>
+    import cx_Oracle
+ModuleNotFoundError: No module named 'cx_Oracle'
+2025-05-07 12:49:55,101 - ERROR - Remove_oracle_db Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/remove_oracle_db.py", line 3, in <module>
+    import cx_Oracle
+ModuleNotFoundError: No module named 'cx_Oracle'
+2025-05-07 12:49:55,185 - ERROR - Check_postgres_db Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/check_postgres_db.py", line 3, in <module>
+    import secret
+ModuleNotFoundError: No module named 'secret'
+import logging
+import requests
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "Utils"))
+from get_secrets import get_secret
+
+# ✅ Setup logging
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+# ✅ Azure API Configuration
+AZURE_TENANT_ID = get_secret("_AZURE_TENANT_ID")
+AZURE_CLIENT_ID = get_secret("_AZURE_CLIENT_ID")
+AZURE_CLIENT_SECRET = get_secret("_AZURE_CLIENT_SECRET")
+AZURE_GRAPH_API = "https://graph.microsoft.com/v1.0"
+AZURE_GROUPS = get_secret("_AZURE_GROUPS")
+
+
+def resolve_group_id(name_or_id):
+    return AZURE_GROUPS.get(name_or_id, name_or_id)
+
+# ✅ Function to Get Azure Access Token
+def get_azure_token(mock_mode=False):
+    """Fetch an Azure authentication token."""
+    if mock_mode:
+        logging.info("[MOCK] Skipping real token request.")
+        return "mock_token"
+
+    url = "https://login.microsoftonline.com/{}/oauth2/v2.0/token".format(AZURE_TENANT_ID)
+    payload = {
+        "client_id": AZURE_CLIENT_ID,
+        "client_secret": AZURE_CLIENT_SECRET,
+        "scope": "https://graph.microsoft.com/.default",
+        "grant_type": "client_credentials"
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    try:
+        response = requests.post(url, data=payload, headers=headers)
+        response.raise_for_status()
+        return response.json().get("access_token")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to get Azure token: {e}")
+        return None
+
+# ✅ Function to Check Azure Access
+def check_azure_access(username, mock_mode=False):
+    """Check if a user has access to Azure Portal."""
+    if mock_mode:
+        logging.info(f"[MOCK] Simulating Azure access check for {username}.")
+        return [{"id": "mock_user_id", "displayName": username}]
+
+    access_token = get_azure_token(mock_mode)
+    if not access_token:
+        return None
+
+    url = f"{AZURE_GRAPH_API}/users?$filter=startswith(userPrincipalName,'{username}')"
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json().get("value", [])  # Returns user data if found
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to check Azure access: {e}")
+        return None
+
+# ✅ Function to Grant Azure Access
+def grant_azure_access(username, group_id, mock_mode=False):
+    """Grant a user access to an Azure Group."""
+    if mock_mode:
+        logging.info(f"[MOCK] Would grant Azure access to {username} in group {group_id}.")
+        return True
+
+    access_token = get_azure_token(mock_mode)
+    if not access_token:
+        return False
+
+    user_data = check_azure_access(username, mock_mode)
+    if not user_data:
+        logging.error(f"❌ User {username} not found in Azure.")
+        return False
+
+    user_id = user_data[0]["id"]
+    url = f"{AZURE_GRAPH_API}/groups/{group_id}/members/$ref"
+    payload = {"@odata.id": f"{AZURE_GRAPH_API}/directoryObjects/{user_id}"}
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        logging.info(f"✅ Successfully granted Azure access to {username} in group {group_id}.")
+        return True
+    except requests.exceptions.RequestException as e:
+        logging.error(f"❌ Failed to grant Azure access to {username}: {e}")
+        return False
+
+# ✅ Function to Remove Azure Access
+def remove_azure_access(username, group_id, mock_mode=False):
+    """Remove a user's access from an Azure Group."""
+    if mock_mode:
+        logging.info(f"[MOCK] Would remove Azure access for {username} in group {group_id}.")
+        return True
+
+    access_token = get_azure_token(mock_mode)
+    if not access_token:
+        return False
+
+    user_data = check_azure_access(username, mock_mode)
+    if not user_data:
+        logging.error(f"❌ User {username} not found in Azure.")
+        return False
+
+    user_id = user_data[0]["id"]
+    url = f"{AZURE_GRAPH_API}/groups/{group_id}/members/{user_id}/$ref"
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+    try:
+        response = requests.delete(url, headers=headers)
+        response.raise_for_status()
+        logging.info(f"✅ Successfully removed Azure access for {username} in group {group_id}.")
+        return True
+    except requests.exceptions.RequestException as e:
+        logging.error(f"❌ Failed to remove Azure access for {username}: {e}")
+        return False
+
+# ✅ Handle Access Management Actions
+def manage_azure_access(action, username, group_id=None, mock_mode=False):
+    """Manage Azure access based on the action selected."""
+    if action == "check":
+        access = check_azure_access(username, mock_mode)
+        if access:
+            print(f"✅ {username} has Azure access.")
+        else:
+            print(f"❌ {username} does NOT have Azure access.")
+
+    elif action == "grant":
+        if not group_id:
+            print("❌ Group ID is required to grant access.")
+            return
+
+        success = grant_azure_access(username, group_id, mock_mode)
+        if success:
+            print(f"✅ Successfully granted Azure access to {username} in group {group_id}.")
+        else:
+            print(f"❌ Failed to grant Azure access to {username} in group {group_id}.")
+
+    elif action == "remove":
+        if not group_id:
+            print("❌ Group ID is required to remove access.")
+            return
+
+        success = remove_azure_access(username, group_id, mock_mode)
+        if success:
+            print(f"✅ Successfully removed Azure access for {username} in group {group_id}.")
+        else:
+            print(f"❌ Failed to remove Azure access for {username} in group {group_id}.")
+
+    else:
+        print("❌ Invalid action. Use 'check', 'grant', or 'remove'.")
+
+# ✅ Run if Executed Directly
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Manage Azure Portal Access")
+    parser.add_argument("action", choices=["check", "grant", "remove"], help="Action to perform")
+    parser.add_argument("username", help="LDAP username of the user")
+    parser.add_argument("--group_id", help="Azure Group ID (required for grant/remove)")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode (for testing)")
+
+    args = parser.parse_args()
+
+    manage_azure_access(args.action, args.username, args.group_id, args.mock)
+
+
+
+
+{
+  "_LDAP_USER": "marchex\\kboller",
+  "_LDAP_PASS": "$martLemur15",
+  "_AdTrack_USER": "soc@marchex.com",
+  "_AdTrack_PASS": "ca8Ubr&St$6u",
+  "_AFR_DB_USER": "soc@marchex.com",
+  "_AFR_DB_PASS": "qua)engua9Ee",
+  "_AFR_DB_HOST": "elpagedb-master.marchex.com",
+  "_AFR_UI_USER": "soc@marchex.com",
+  "_AFR_UI_PASS": "qua)engua9Ee",
+  "_AUTH0_CLIENT_ID": "your-client-id-here",
+  "_AUTH0_CLIENT_SECRET": "your-client-secret-here",
+  "_AUTH0_DOMAIN": "marchex.auth0.com",  // This is the base Auth0 domain
+  "_AUTH0_AUDIENCE": "https://marchex.io/v4-api",  // Common for Machine-to-Machine apps
+  "_AUTH0_GRANT_TYPE": "client_credentials",
+  "_AUTH0_SCOPE": "read:users",  // Or whatever scope is relevant
+  "_AUTH0_ADMIN_EMAIL": "soc@marchex.com",
+  "_AUTH0_ADMIN_PASS": "from Bitwarden or SSO",
+  "_AUTH0_TENANTS": ["marchex", "marchex-dev", "marchex-qa", "omni-dev"],
+  "_AWS_USER": "aws-admin-user",
+  "_AWS_PASS": "temp-password",
+  "_AWS_PROFILE": "default",
+  "_AWS_BILLING_GROUP": "Billing",
+  "_AWS_DEV_GROUP": "DevTeam",
+  "_AWS_INFRA_ROLE_ARN": "arn:aws:iam::<ACCOUNT_ID>:role/MarchexInfrastructure",
+  "_AZURE_TENANT_ID": "your-tenant-id",
+  "_AZURE_CLIENT_ID": "your-client-id",
+  "_AZURE_CLIENT_SECRET": "your-client-secret",
+  "_AZURE_GROUPS": {
+    "exampleGroup": "group-object-id-here",
+    "engineering": "engineering-group-id",
+    "finance": "finance-group-id"
+  },
+  "_CALL_SCORING_API_KEY": "callscoring-api-key",
+  "_CHEF_USER": "chef-user",
+  "_CHEF_PASS": "chef-pass",
+  "_ENGAGE_API_KEY": "engage-api-token",
+  "_GITHUB_API_KEY": "ghp_XXXXXXXXXXXXXXXXXXXX",
+  "_GITHUB_TOKEN": "github-personal-access-token",
+  "_GRAFANA_API_KEY": "grafana-token",
+  "_JIRA_API_KEY": "jira-api-token-here",
+  "_MARKETING_EDGE_API_KEY": "marketing-token",
+  "_NEXUS_API_KEY": "nexus-token",
+  "_NIMUI_USER": "nimui-user",
+  "_NIMUI_PASS": "nimui-pass",
+  "_PAGERDUTY_API_KEY": "pd-api-key-here",
+  "_PULLEY_API_KEY": "pulley-api-key",
+  "_PULLEY_API_SECRET": "pulley-api",
+  "_RT_USER": "rt-user",
+  "_RT_PASS": "rt-pass",
+  "_SENTRY_API_KEY": "sentry-token",
+  "_SNOWFLAKE_USER": "snowflake-user",
+  "_SNOWFLAKE_PASS": "snowflake-password",
+  "_ORACLE_INSTANCES": ["OPNEXT", "DB2"],
+  "_PROD_POSTGRES_USER": "postgres-user",
+  "_PROD_POSTGRES_PASS": "postgres-password"
+}
+
+no, lets next move on and look at chef and chefdatabag, attached is the password and below is the SOP and my current script., does the current script adhere to the SOP and what should go in my creds.json file?
+
+
+
+
+SOC SOP uiAccessChef
+SOC SOP uiSalesEdge | SOC SOP uiGitHub | SOC SOP engageSpotlightAccess | SOC SOP uiAccessChef DataBag | SOC SOP uiAccessChef
+Jump to navigationJump to search
+Description
+This SOP is for adding and removing access for the Chef.
+
+
+
+Adding AccessRemoving Access
+
+
+SOC only works on chef DataBag permission. For other chef permission, you need to create a ticket or forward it to tools team
+
+Other Chef Links:
+https://wiki.marchex.com/index.php/SOC_SOP_uiAccessChef_DataBag
+https://github.marchex.com/marchex-chef/databag_user_access_control
+https://github.marchex.com/marchex-chef/databag_user_access_control/tree/master/items
+
+Removing Access
+
+
+SOC only works on chef DataBag permission. For other chef permission, you need to create a ticket or forward it to tools team
+
+
+Other Chef Links:
+https://wiki.marchex.com/index.php/SOC_SOP_uiAccessChef_DataBag
+https://github.marchex.com/marchex-chef/databag_user_access_control
+https://github.marchex.com/marchex-chef/databag_user_access_control/tree/master/items
+
+
+
+
+
+
+SOC SOP uiAccessChef DataBag
+SOC SOP uiNexus | SOC SOP uiPulley | SOC SOP uiSentry | SOC SOP snowflakeAccess | SOC SOP uiAccessChef DataBag
+Jump to navigationJump to search
+Description
+This SOP is for adding and removing access for the Chef_DataBag.
+
+
+
+Adding AccessRemoving Access
+
+
+Click this link: https://github.com/marchex-chef-emu/databag_user_access_control/tree/master/items
+https://github.com/enterprises/marchex-emu/sso?return_to=https%3A%2F%2Fgithub.com%2Fmarchex-chef-emu%2Fdatabag_user_access_control
+
+sign in
+
+Near the top right click Create new file button
+
+Scroll to top of screen and put in their username.json (mine is aderrick.json)
+
+databag_user_access_control/items/_____ or cancel
+Add the following to the text box, but change UserName to their ldap alias
+
+{
+"id": "UserName"
+}
+Click the green Commit new file button at the bottom
+
+Click the green Create pull request button in the middle of the screen
+
+Wait while the checks are done, this can take a few minutes
+
+Click the green Merge pull request button in the middle of the screen
+
+Click the green Confirm merge button in the middle of the screen
+
+Click the Delete branch button. It's on the right and gray.
+
+Removing Access
+
+Click this link: https://github.com/marchex-chef-emu/databag_user_access_control/tree/master/items
+https://github.com/enterprises/marchex-emu/sso?return_to=https%3A%2F%2Fgithub.com%2Fmarchex-chef-emu%2Fdatabag_user_access_control
+
+sign in
+
+find user as (userName.json)
+
+click it
+
+
+find garbage can on far right side of the grayish bar
+
+click it
+
+
+
+click commit changes (green button)
+
+
+
+click create pull request (green button)
+
+
+wait while the checks are completing. It's the gold/tan text in the middle of the screen.
+
+This might take a few minutes.
+
+When it completes a green button (Merge Pull Request) pop up.
+
+Click the button.
+
+
+Then a green Confirm Merge button pops up.
+
+Click it.
+
+
+Then a gray Delete branch button pops up.
+
+Click it.
+
+
+At the top left of the page, you can click the blue "databag_user_access_control" again
+
+
+Then click the blue folder that says items (below/left of the green clone or download button)
+
+
+Verify the user's json file is gone.
+
+
+
+
+import logging
+import json
+import subprocess
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "Utils"))
+from get_secrets import get_secret
+
+# ✅ Setup logging
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+# ✅ Chef Configuration
+CHEF_DATABAG_PATH = "/etc/chef/data_bags/users"  # Adjust if needed
+CHEF_CMD = "/usr/bin/knife"  # Path to knife CLI
+CHEF_ORG = "marchex"  # Organization name
+
+# ✅ Function to Check Chef Access
+def check_chef_access(username, mock_mode=False):
+    """Check if a user has access to Chef DataBag."""
+    if mock_mode:
+        logging.info(f"[MOCK] Simulating Chef access check for {username}.")
+        return f"User {username} exists in DataBag (Mock Mode)"
+
+    user_databag = os.path.join(CHEF_DATABAG_PATH, f"{username}.json")
+    
+    if os.path.exists(user_databag):
+        with open(user_databag, "r") as file:
+            user_data = json.load(file)
+        logging.info(f"✅ {username} has Chef DataBag access.")
+        return user_data
+    else:
+        logging.info(f"❌ {username} does NOT have Chef DataBag access.")
+        return None
+
+# ✅ Function to Grant Chef Access
+def grant_chef_access(username, mock_mode=False):
+    """Grant a user access to Chef DataBag."""
+    if mock_mode:
+        logging.info(f"[MOCK] Would grant Chef DataBag access to {username}.")
+        return True
+
+    user_databag = os.path.join(CHEF_DATABAG_PATH, f"{username}.json")
+
+    user_data = {
+        "id": username,
+        "groups": ["default"],
+        "environment": "production",
+        "permissions": ["read", "execute"]
+    }
+
+    try:
+        with open(user_databag, "w") as file:
+            json.dump(user_data, file, indent=4)
+        
+        subprocess.run([CHEF_CMD, "data_bag", "from_file", "users", user_databag], check=True)
+        logging.info(f"✅ Successfully granted Chef DataBag access to {username}.")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Failed to grant Chef access to {username}: {e}")
+        return False
+
+# ✅ Function to Remove Chef Access
+def remove_chef_access(username, mock_mode=False):
+    """Remove a user's access from Chef DataBag."""
+    if mock_mode:
+        logging.info(f"[MOCK] Would remove Chef DataBag access for {username}.")
+        return True
+
+    try:
+        subprocess.run([CHEF_CMD, "data_bag", "delete", "users", username, "-y"], check=True)
+        logging.info(f"✅ Successfully removed Chef DataBag access for {username}.")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Failed to remove Chef access for {username}: {e}")
+        return False
+
+# ✅ Handle Access Management Actions
+def manage_chef_access(action, username, mock_mode=False):
+    """Manage Chef access based on the action selected."""
+    if action == "check":
+        access = check_chef_access(username, mock_mode)
+        if access:
+            print(f"✅ {username} has Chef DataBag access.")
+        else:
+            print(f"❌ {username} does NOT have Chef DataBag access.")
+
+    elif action == "grant":
+        success = grant_chef_access(username, mock_mode)
+        if success:
+            print(f"✅ Successfully granted Chef DataBag access to {username}.")
+        else:
+            print(f"❌ Failed to grant Chef DataBag access to {username}.")
+
+    elif action == "remove":
+        success = remove_chef_access(username, mock_mode)
+        if success:
+            print(f"✅ Successfully removed Chef DataBag access for {username}.")
+        else:
+            print(f"❌ Failed to remove Chef DataBag access for {username}.")
+
+    else:
+        print("❌ Invalid action. Use 'check', 'grant', or 'remove'.")
+
+# ✅ Run if Executed Directly
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Manage Chef Access")
+    parser.add_argument("action", choices=["check", "grant", "remove"], help="Action to perform")
+    parser.add_argument("username", help="LDAP username of the user")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode (for testing)")
+
+    args = parser.parse_args()
+
+    manage_chef_access(args.action, args.username, args.mock)
+
+
+
+
+import logging
+import json
+import requests
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "Utils"))
+from get_secrets import get_secret
+
+# ✅ Setup logging
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+# ✅ GitHub Repository Configuration
+GITHUB_REPO = "marchex-chef-emu/databag_user_access_control"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}"
+GITHUB_ACCESS_TOKEN = get_secret("_GITHUB_TOKEN")  # Store in Azure Key Vault or environment
+
+HEADERS = {
+    "Authorization": f"token {GITHUB_ACCESS_TOKEN}",
+    "Accept": "application/vnd.github.v3+json"
+}
+
+# ✅ Function to Check Chef DataBag Access
+def check_chefdatabag_access(username, mock_mode=False):
+    """Check if a user has access to Chef DataBag on GitHub."""
+    if mock_mode:
+        logging.info(f"[MOCK] Simulating Chef DataBag access check for {username}.")
+        return True  # Simulated access
+
+    file_url = f"{GITHUB_API_URL}/contents/items/{username}.json"
+
+    response = requests.get(file_url, headers=HEADERS)
+
+    if response.status_code == 200:
+        logging.info(f"✅ {username} has access in Chef DataBag.")
+        return True
+    else:
+        logging.info(f"❌ {username} does NOT have access in Chef DataBag.")
+        return False
+
+# ✅ Function to Grant Chef DataBag Access
+def grant_chefdatabag_access(username, mock_mode=False):
+    """Grant a user access to Chef DataBag by creating a JSON file in GitHub."""
+    if mock_mode:
+        logging.info(f"[MOCK] Would grant Chef DataBag access to {username}.")
+        return True
+
+    file_path = f"items/{username}.json"
+    commit_message = f"Grant Chef DataBag access to {username}"
+    file_content = json.dumps({"id": username}, indent=4)
+
+    url = f"{GITHUB_API_URL}/contents/{file_path}"
+    
+    data = {
+        "message": commit_message,
+        "content": file_content.encode("utf-8").decode("latin1"),
+        "branch": "main"
+    }
+
+    response = requests.put(url, headers=HEADERS, json=data)
+
+    if response.status_code == 201:
+        logging.info(f"✅ Successfully granted Chef DataBag access to {username}.")
+        return True
+    else:
+        logging.error(f"❌ Failed to grant Chef DataBag access to {username}: {response.text}")
+        return False
+
+# ✅ Function to Remove Chef DataBag Access
+def remove_chefdatabag_access(username, mock_mode=False):
+    """Remove a user's access from Chef DataBag by deleting their JSON file."""
+    if mock_mode:
+        logging.info(f"[MOCK] Would remove Chef DataBag access for {username}.")
+        return True
+
+    file_path = f"items/{username}.json"
+    commit_message = f"Remove Chef DataBag access for {username}"
+
+    # Get file SHA first
+    url = f"{GITHUB_API_URL}/contents/{file_path}"
+    response = requests.get(url, headers=HEADERS)
+
+    if response.status_code == 200:
+        file_sha = response.json().get("sha")
+        delete_data = {
+            "message": commit_message,
+            "sha": file_sha,
+            "branch": "main"
+        }
+
+        response = requests.delete(url, headers=HEADERS, json=delete_data)
+
+        if response.status_code == 200:
+            logging.info(f"✅ Successfully removed Chef DataBag access for {username}.")
+            return True
+        else:
+            logging.error(f"❌ Failed to remove Chef DataBag access for {username}: {response.text}")
+            return False
+    else:
+        logging.error(f"❌ User {username} does NOT exist in Chef DataBag.")
+        return False
+
+# ✅ Handle Access Management Actions
+def manage_chefdatabag_access(action, username, mock_mode=False):
+    """Manage Chef DataBag access based on the action selected."""
+    if action == "check":
+        access = check_chefdatabag_access(username, mock_mode)
+        print(f"✅ {username} has Chef DataBag access." if access else f"❌ {username} does NOT have Chef DataBag access.")
+
+    elif action == "grant":
+        success = grant_chefdatabag_access(username, mock_mode)
+        print(f"✅ Successfully granted Chef DataBag access to {username}." if success else f"❌ Failed to grant access.")
+
+    elif action == "remove":
+        success = remove_chefdatabag_access(username, mock_mode)
+        print(f"✅ Successfully removed Chef DataBag access for {username}." if success else f"❌ Failed to remove access.")
+
+    else:
+        print("❌ Invalid action. Use 'check', 'grant', or 'remove'.")
+
+# ✅ Run if Executed Directly
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Manage Chef DataBag Access via GitHub")
+    parser.add_argument("action", choices=["check", "grant", "remove"], help="Action to perform")
+    parser.add_argument("username", help="LDAP username of the user")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode (for testing)")
+
+    args = parser.parse_args()
+
+    manage_chefdatabag_access(args.action, args.username, args.mock)
+
+
+
+
+
+no lets move on to engage, below is the SOPs
+
+
+
+
+SOC SOP engageSpotlightAccess 
+Cross Account Access | MIND+ Development Team Account | SOC SOP uiSalesEdge | SOC SOP uiGitHub | SOC SOP engageSpotlightAccess
+Jump to navigationJump to search
+Quick Note for Login Error for LDAP users
+
+It is possible LDAP passwords to go out of sync and in that case we need to ask helpdesk to re-sync the LDAP credentials for UI.
+If the user is logged in and sees a message about ad|Marchex|ldapusername not found, this usually means the user isn't added in the Marchex company in the UI, and it could happen because a change of name isn't reflected in the UI. We can use the process below to check and add the user to the list.
+
+Quick Note to understand what this is
+Go UI / One UI / Engage / Spotlight are all the same website (app.marchex.io) which uses login.marchex.io for logging in. login.marchex.io is a proxy for doing authentication with Auth0. login.marchex.io is also used for authentication for Speech 1.5 and Reporting
+
+Creating Marchex Users for https://app.marchex.io , https://qa-oneui.marchex.com/ , and https://reporting.marchex.io
+
+This website has had many names over the years. As of October 12, 2021 it is called Engage UI. Previous names include: One UI, Go UI, Edge UI, Sales Edge UI.
+
+Marchex Users log into this UI with their LDAP credentials. They should use their username, not their full email address.
+
+Contractor's and Vendor's email addresses usually have a -c or -v (e.g. username-c@marchex.com) but their LDAP username is usually just 'username'
+
+
+FOR PRODUCTION: You can use the https://app.marchex.io UI to create the user in production.
+
+FOR QA ACCESS: You can use the https://qa-oneui.marchex.com/ UI to create the user in QA.
+
+
+App.marchex.io-initial-screen.jpg
+
+Navigate to People -> Users on the left hand navigation panel.
+
+App.marchex.io-user-list.jpg
+
+With the search Icon search for the user to make sure they haven't already been added.
+
+If they have not been added, click the 'CREATE NEW USER' button
+
+Fill in the email, first, last names. If the user is a contractor or vendor fill in the ldapUsername field with the appropriate username. This field should not be required, but if it is fill it in with the username. Ignore the text below the form; it does not apply to LDAP users.
+
+App.marchex.io-user-details.jpg
+
+Choose Marchex as the Org Unit (this is a type-ahead search box). Choose MARCHEX_STAFF as the role.
+
+App.marchex.io-org-role-details.jpg
+
+After you have created the newly added user can you either send them an email or add them to the CC line of the ticket and then put this into the ticket:
+
+To login:
+1. Go to app.marchex.io
+2. Put your username (the part before the @marchex.com. For example I would use "aderrick" and not "aderrick@marchex.com") in the username/alias
+3. Put your Marchex LDAP password for the password
+4. Enjoy your new access!
+
+
+
+
+and heres my current engage.py script
+
+
+import logging
+import requests
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "Utils"))
+from get_secrets import get_secret
+
+# ✅ Setup logging
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+# ✅ Engage API Configuration
+ENGAGE_API_URL = "https://app.marchex.io/api"
+ENGAGE_API_TOKEN = get_secret("_ENGAGE_API_KEY")  # Store in Azure Key Vault or environment
+
+HEADERS = {
+    "Authorization": f"Bearer {ENGAGE_API_TOKEN}",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
+
+# ✅ Function to Check Engage Access
+def check_engage_access(username, mock_mode=False):
+    """Check if a user has access to Engage (mocked when MOCK_MODE=True)."""
+    if mock_mode:
+        logging.info(f"[MOCK] Simulating Engage access check for {username}.")
+        return True  # Simulated access
+
+    search_url = f"{ENGAGE_API_URL}/users?search={username}"
+    
+    try:
+        response = requests.get(search_url, headers=HEADERS)
+        response.raise_for_status()
+        users = response.json().get("users", [])
+
+        if users:
+            logging.info(f"✅ {username} has Engage access.")
+            return True
+        else:
+            logging.info(f"❌ {username} does NOT have Engage access.")
+            return False
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to check Engage access for {username}: {e}")
+        return False
+
+# ✅ Function to Grant Engage Access
+def grant_engage_access(username, email, first_name, last_name, mock_mode=False):
+    """Grant a user access to Engage by creating a new user."""
+    if mock_mode:
+        logging.info(f"[MOCK] Would grant Engage access to {username}.")
+        return True
+
+    user_data = {
+        "email": email,
+        "first_name": first_name,
+        "last_name": last_name,
+        "username": username,
+        "org_unit": "Marchex",
+        "role": "MARCHEX_STAFF"
+    }
+
+    create_url = f"{ENGAGE_API_URL}/users"
+
+    try:
+        response = requests.post(create_url, headers=HEADERS, json=user_data)
+        response.raise_for_status()
+
+        if response.status_code == 201:
+            logging.info(f"✅ Successfully granted Engage access to {username}.")
+            return True
+        else:
+            logging.warning(f"⚠️ Unexpected response while granting Engage access to {username}: {response.status_code}")
+            return False
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"❌ Failed to grant Engage access to {username}: {e}")
+        return False
+
+# ✅ Function to Remove Engage Access
+def remove_engage_access(username, mock_mode=False):
+    """Remove a user's access from Engage."""
+    if mock_mode:
+        logging.info(f"[MOCK] Would remove Engage access for {username}.")
+        return True
+
+    search_url = f"{ENGAGE_API_URL}/users?search={username}"
+    
+    try:
+        response = requests.get(search_url, headers=HEADERS)
+        response.raise_for_status()
+        users = response.json().get("users", [])
+
+        if not users:
+            logging.info(f"❌ {username} does NOT exist in Engage.")
+            return False
+
+        user_id = users[0]["id"]
+        delete_url = f"{ENGAGE_API_URL}/users/{user_id}"
+
+        delete_response = requests.delete(delete_url, headers=HEADERS)
+
+        if delete_response.status_code == 204:
+            logging.info(f"✅ Successfully removed Engage access for {username}.")
+            return True
+        else:
+            logging.warning(f"⚠️ Failed to remove Engage access for {username}: {delete_response.status_code}")
+            return False
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"❌ Failed to remove Engage access for {username}: {e}")
+        return False
+
+# ✅ Handle Access Management Actions
+def manage_engage_access(action, username, email=None, first_name=None, last_name=None, mock_mode=False):
+    """Manage Engage access based on the action selected."""
+    if action == "check":
+        access = check_engage_access(username, mock_mode)
+        print(f"✅ {username} has Engage access." if access else f"❌ {username} does NOT have Engage access.")
+
+    elif action == "grant":
+        if not email or not first_name or not last_name:
+            print("❌ Missing required information for granting access. Provide email, first name, and last name.")
+            return
+        success = grant_engage_access(username, email, first_name, last_name, mock_mode)
+        print(f"✅ Successfully granted Engage access to {username}." if success else f"❌ Failed to grant access.")
+
+    elif action == "remove":
+        success = remove_engage_access(username, mock_mode)
+        print(f"✅ Successfully removed Engage access for {username}." if success else f"❌ Failed to remove access.")
+
+    else:
+        print("❌ Invalid action. Use 'check', 'grant', or 'remove'.")
+
+# ✅ Run if Executed Directly
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Manage Engage Access via API")
+    parser.add_argument("action", choices=["check", "grant", "remove"], help="Action to perform")
+    parser.add_argument("username", help="LDAP username of the user")
+    parser.add_argument("--email", help="Email address of the user (required for granting access)")
+    parser.add_argument("--first_name", help="First name of the user (required for granting access)")
+    parser.add_argument("--last_name", help="Last name of the user (required for granting access)")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode (for testing)")
+
+    args = parser.parse_args()
+
+    manage_engage_access(args.action, args.username, args.email, args.first_name, args.last_name, args.mock)
+this is the soc credentials saved in dashlane for logging into adtrack
+this tool will be used by everyone on the SOC so soc credentials from dashlane should be used not my personal ldap, individual personal ldap login credentials should only be used by a member of the soc on the screen in the attached screenshot to authenticate ldap for logging into the tool
+the commas was added to fix the issue in creds, the host has been corrected in the adtrack.py script and the creds file has the dashlane soc credentials
+
+
+
+
+2025-05-09 17:17:46,761 - INFO - Checking access for kboller
+2025-05-09 17:17:47,356 - ERROR - Pulley Error: 2025-05-09 17:17:47,343 - WARNING - ⚠️ Unexpected response while checking access: 500
+2025-05-09 17:17:47,527 - ERROR - Github Error: 2025-05-09 17:17:47,514 - WARNING - ⚠️ Unexpected response: 401
+2025-05-09 17:17:48,011 - ERROR - Jira Error: 2025-05-09 17:17:47,999 - ERROR - JIRA API request failed: 401 Client Error:  for url: https://jira.marchex.com/rest/api/latest/user?username=kboller
+2025-05-09 17:17:48,182 - ERROR - Azureportal Error: 2025-05-09 17:17:48,170 - ERROR - Failed to get Azure token: 400 Client Error: Bad Request for url: https://login.microsoftonline.com/your-tenant-id/oauth2/v2.0/token
+2025-05-09 17:17:48,462 - ERROR - Adtrack Error: 2025-05-09 17:17:48,455 - ERROR - ❌ Database connection failed: connection to server at "vspoolint.marchex.com" (10.135.33.11), port 5432 failed: ERROR:  no such user
+
+2025-05-09 17:17:48,455 - ERROR - ❌ Database connection failed: Could not establish connection.
+2025-05-09 17:17:49,006 - ERROR - Pagerduty Error: 2025-05-09 17:17:48,993 - ERROR - ❌ Failed to fetch PagerDuty user data: 401 Client Error: Unauthorized for url: https://api.pagerduty.com/users?query=kboller
+2025-05-09 17:17:54,466 - ERROR - Grafana Error: 2025-05-09 17:17:54,453 - ERROR - ❌ Failed to retrieve Grafana users: HTTPSConnectionPool(host='grafana.marchex.com', port=443): Max retries exceeded with url: /api/org/users (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x703cebed9c00>: Failed to establish a new connection: [Errno 111] Connection refused'))
+2025-05-09 17:17:54,501 - ERROR - Aws Error: 2025-05-09 17:17:54,496 - ERROR - ❌ AWS CLI is not installed. Please install it using 'pip install awscli'.
+2025-05-09 17:17:54,996 - ERROR - Nexus Error: 2025-05-09 17:17:54,984 - INFO - ❌ kboller is NOT in Nexus.
+2025-05-09 17:17:55,267 - ERROR - Engage Error: 2025-05-09 17:17:55,255 - ERROR - ❌ Failed to check Engage access: 404 Client Error: Not Found for url: https://app.marchex.io/api/users?search=kboller
+2025-05-09 17:17:55,344 - ERROR - Rt_tickets Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/rt_tickets.py", line 7, in <module>
+    import rt
+ModuleNotFoundError: No module named 'rt'
+2025-05-09 17:17:55,375 - ERROR - Nimui Error: 2025-05-09 17:17:55,371 - ERROR - ❌ Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 17:17:55,673 - ERROR - Sentry Error: 2025-05-09 17:17:55,660 - ERROR - ❌ Failed to check Sentry access for kboller: 401 Client Error: Unauthorized for url: https://sentry.io/api/0/organizations/callcap/members/
+2025-05-09 17:17:55,858 - ERROR - Chefdatabag Error: 2025-05-09 17:17:55,846 - ERROR - Error checking access: 401 - {"message":"Bad credentials","documentation_url":"https://docs.github.com/rest","status":"401"}
+2025-05-09 17:17:56,579 - ERROR - Marketingedge Error: 2025-05-09 17:17:56,566 - INFO - ❌ kboller is NOT in Marketing Edge.
+2025-05-09 17:17:56,901 - ERROR - Auth0 Error: 2025-05-09 17:17:56,888 - ERROR - Failed to get Auth0 token: 401 Client Error: Unauthorized for url: https://marchex.auth0.com/oauth/token
+2025-05-09 17:17:57,765 - ERROR - Snowflake_access Error: 2025-05-09 17:17:57,204 - INFO - Snowflake Connector for Python Version: 3.15.0, Python Version: 3.10.12, Platform: Linux-6.8.0-1027-azure-x86_64-with-glibc2.35
+2025-05-09 17:17:57,204 - INFO - Connecting to GLOBAL Snowflake domain
+2025-05-09 17:17:57,722 - ERROR - ❌ Failed to connect to Snowflake: 250001 (08001): None: Failed to connect to DB: sj79957.snowflakecomputing.com:443. Incorrect username or password was specified.
+2025-05-09 17:17:57,796 - ERROR - Afr Error: 2025-05-09 17:17:57,792 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 17:17:57,826 - ERROR - Grant_oracle_db Error: 2025-05-09 17:17:57,822 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+
+
+DB_CONFIG = {
+    "dbname": "adtrack_ro",
+    "host": "vspoolint.marchex.com",
+    "port": 5432,
+    "user": get_secret("_AdTrack_USER"),
+    "password": get_secret("_AdTrack_PASS")
+}
+
+
+
+
+
+
+
+are one of these more what we need then?
+why didnt the "INFO - ❌ kboller does NOT have AdTrack UI access." message appear in the UI?
+all paste the script for the (gui) soctool.py and the CLI (access_management.py) scripts below for your review
+
+
+
+
+"""
+SOC Access Management Tool (GUI)
+----------------------------------------------------
+✅ Provides a GUI wrapper for access_management.py.
+✅ Enforces LDAP authentication before executing actions.
+✅ Calls access_management.py for check, grant, and remove actions.
+✅ Mock mode enabled by default for safety.
+✅ Optional RT Ticket logging.
+"""
+
+import sys
+import os
+import subprocess
+import threading
+import logging
+import tkinter as tk
+from tkinter import messagebox, scrolledtext
+from ldap3 import Server, Connection, SIMPLE, AUTO_BIND_NO_TLS
+
+# ✅ Set up base directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  
+LOGS_DIR = os.path.join(BASE_DIR, "Logs")
+ACCESS_SCRIPT = os.path.join(BASE_DIR, "access_management.py")
+
+# ✅ Ensure Logs directory exists
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# ✅ Set up logging
+LOG_FILE = os.path.join(LOGS_DIR, "soctool.log")
+
+# ✅ Updated logging: file + console
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+LDAP_SERVER = "ldaps://10.90.255.145"  # Update as needed
+
+# ✅ Function to execute access_management.py
+def execute_access_action(action, ldap_user, ldap_pass, target_user, rt_ticket, mock_mode, log_area):
+    """Runs access_management.py in a subprocess and updates GUI logs."""
+
+    def run():
+        try:
+            args = ["python3", ACCESS_SCRIPT, action, target_user, "--ldap_user", ldap_user, "--ldap_pass", ldap_pass]
+
+            if rt_ticket:
+                args.extend(["--rt_ticket", rt_ticket])
+            if mock_mode:
+                args.append("--mock")
+
+
+            process = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                bufsize=1
+            )
+
+            for line in iter(process.stdout.readline, ""):
+                log_area.insert(tk.END, line.strip() + "\n")
+                log_area.see(tk.END)
+
+            for line in iter(process.stderr.readline, ""):
+                log_area.insert(tk.END, f"⚠️ {line.strip()}\n")
+                log_area.see(tk.END)
+
+            process.stdout.close()
+            process.stderr.close()
+            process.wait()
+
+        except Exception as e:
+            log_area.insert(tk.END, f"❌ Error: {str(e)}\n", "error")
+            logging.error(f"Error executing {ACCESS_SCRIPT}: {str(e)}")
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+
+# ✅ Function to create GUI window for actions
+def open_access_window(action, show_mock_mode=True):
+    """Creates a GUI window to handle access actions."""
+
+    action_window = tk.Toplevel(root)
+    action_window.title(f"SOC - {action.capitalize()} Access")
+    action_window.geometry("500x525")
+
+    tk.Label(action_window, text=f"{action.capitalize()} User Access", font=("Arial", 14, "bold")).pack(pady=10)
+
+    # ✅ LDAP Credentials
+    tk.Label(action_window, text="Your LDAP Username:").pack()
+    ldap_user_entry = tk.Entry(action_window, width=40)
+    ldap_user_entry.pack(pady=5)
+
+    tk.Label(action_window, text="Your LDAP Password:").pack()
+    ldap_pass_entry = tk.Entry(action_window, width=40, show="*")
+    ldap_pass_entry.pack(pady=5)
+
+    # ✅ Target User
+    tk.Label(action_window, text="Target LDAP Username:").pack()
+    target_user_entry = tk.Entry(action_window, width=40)
+    target_user_entry.pack(pady=5)
+
+    # ✅ RT Ticket (Optional)
+    tk.Label(action_window, text="Enter RT Ticket Number (Optional):").pack()
+    rt_ticket_entry = tk.Entry(action_window, width=40)
+    rt_ticket_entry.pack(pady=5)
+
+    # ✅ Mock Mode (Enabled by default)
+    mock_mode = tk.BooleanVar(value=True)
+    if show_mock_mode:
+        tk.Checkbutton(action_window, text="Enable Mock Mode", variable=mock_mode).pack()
+
+    # ✅ Log Display
+    tk.Label(action_window, text="Logs:").pack()
+    log_area = tk.Text(action_window, width=60, height=10)
+    log_area.pack(pady=5)
+
+    def execute_action():
+        """Executes the access action when the button is clicked."""
+        ldap_user = ldap_user_entry.get().strip()
+        ldap_pass = ldap_pass_entry.get().strip()
+        target_user = target_user_entry.get().strip()
+        rt_ticket = rt_ticket_entry.get().strip() if rt_ticket_entry.get().strip() else None
+
+        if not ldap_user or not ldap_pass or not target_user:
+            messagebox.showerror("Error", "LDAP username, password, and target user are required.")
+            return
+
+        log_area.insert(tk.END, f"🚀 Running {action} access script for {target_user}...\n")
+        log_area.see(tk.END)
+
+        execute_access_action(action, ldap_user, ldap_pass, target_user, rt_ticket, mock_mode.get(), log_area)
+
+    tk.Button(action_window, text="Execute", command=execute_action, font=("Arial", 12), width=20).pack(pady=10)
+
+
+# ✅ Function to open RT queue clearing window
+def open_clear_rt_window():
+    """Opens a GUI window to display RT queue clearing process in real-time."""
+
+    rt_window = tk.Toplevel(root)
+    rt_window.title("Clearing RT Queue")
+    rt_window.geometry("600x400")
+
+    tk.Label(rt_window, text="Processing RT Queue...", font=("Arial", 14, "bold")).pack(pady=10)
+
+    log_area = scrolledtext.ScrolledText(rt_window, width=70, height=15)
+    log_area.pack(pady=5)
+
+    execute_script("clear_rt", [], log_area)
+
+
+# ✅ GUI Window Setup
+root = tk.Tk()
+root.title("SOC Access Management")
+root.geometry("400x350")
+root.resizable(False, False)
+
+tk.Label(root, text="SOC Access Management", font=("Arial", 14, "bold")).pack(pady=20)
+
+tk.Button(root, text="Check User Access", font=("Arial", 12),
+          command=lambda: open_access_window("check", show_mock_mode=False), width=25, height=2).pack(pady=5)
+
+tk.Button(root, text="Grant User Access", font=("Arial", 12),
+          command=lambda: open_access_window("grant", show_mock_mode=True), width=25, height=2).pack(pady=5)
+
+tk.Button(root, text="Remove User Access", font=("Arial", 12),
+          command=lambda: open_access_window("remove", show_mock_mode=True), width=25, height=2).pack(pady=5)
+
+tk.Button(root, text="Clear RT Queue", font=("Arial", 12),
+          command=lambda: open_clear_rt_window(), width=25, height=2).pack(pady=5)
+
+# ✅ Start GUI
+root.mainloop()
+
+
+
+"""
+SOC Access Management Tool (CLI Only)
+---------------------------------------------------
+✅ CLI-based access management for SOC.
+✅ Secure LDAP authentication via Azure Key Vault.
+✅ Interactive access management (Check → Remove/Grant).
+✅ Independent from GUI (SOC Tool calls this script).
+"""
+
+#Example CLI Usage
+#python access_management.py check kboller
+#python access_management.py grant kboller --rt_ticket 12345
+#python access_management.py remove kboller --mock
+
+import argparse
+import logging
+import os
+import subprocess
+import sys
+import getpass
+from datetime import datetime
+from ldap3 import Server, Connection, NTLM, ALL, core, SIMPLE
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Utils"))
+from get_secrets import get_secret
+
+
+# ✅ Ensure UTF-8 encoding to prevent errors
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+# ✅ Set up base directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Get current script location
+SYSTEMS_DIRS = [
+    os.path.join(BASE_DIR, "Systems", "UIs"),
+    os.path.join(BASE_DIR, "Systems", "DBs")
+]  # Locate Systems/UIs and 'System/DBs' folder
+LOG_DIR = os.path.join(BASE_DIR, "Logs")  # Correct path to Logs/
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# ✅ Set up logging
+LOG_FILE = os.path.join(LOG_DIR, "access_management.log")
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+# ✅ Attempt to import rt_api.py (for RT ticket updates)
+try:
+    sys.path.insert(0, os.path.join(BASE_DIR, "Utils"))
+    from rt_api import add_comment
+except ModuleNotFoundError:
+    def add_comment(ticket, comment):
+        logging.warning(f"RT API not found. Skipping RT ticket update: {ticket}.")
+        print(f"⚠️ RT API not found. Skipping RT ticket update: {ticket}.")
+
+
+def authenticate_ldap(username, password):
+    ldap_server = "ldap.oci-iad-prd.marchex.com"  # Using the OpenLDAP host Tim referenced
+    user_dn = f"uid={username},ou=users,dc=marchex,dc=com"
+
+    print(f"🔐 Trying LDAP bind as DN: {user_dn} to {ldap_server}")
+
+    try:
+        server = Server(ldap_server, port=636, use_ssl=True, get_info=ALL)
+        conn = Connection(
+            server,
+            user=user_dn,
+            password=password,
+            authentication=SIMPLE
+        )
+
+        if not conn.bind():
+            print(f"❌ LDAP auth failed: {conn.result['description']}")
+            return False
+
+        print(f"✅ Authenticated to LDAP as {user_dn}")
+        return True
+
+    except Exception as e:
+        print(f"❌ LDAP auth exception: {e}")
+        return False
+
+
+# ✅ Prompt for missing inputs
+def prompt_if_missing(value, prompt_text):
+    """Prompt user for input if a value is missing."""
+    return value if value else input(prompt_text).strip()
+
+
+# ✅ Check user access
+def check_user_access(target_user):
+    """Checks all systems where the user has access."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"🔹 Checking access for {target_user} at {timestamp}")
+    logging.info(f"Checking access for {target_user}")
+
+    access_list = []
+
+    found_any = False
+
+    for directory in SYSTEMS_DIRS:
+        if not os.path.exists(directory):
+            continue  # silently skip missing dirs
+
+        found_any = True
+
+        for script in os.listdir(directory):
+            if script.endswith(".py"):
+                system_name = script.replace(".py", "").capitalize()
+                script_path = os.path.join(directory, script)
+
+                try:
+                    cmd = [sys.executable, script_path, "check", target_user]
+                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+                    stdout_output, stderr_output = process.communicate()
+
+                    if stdout_output.strip():
+                        print(f"✅ {system_name}: {stdout_output.strip()}")
+                        access_list.append(system_name)
+
+                    if stderr_output.strip():
+                        print(f"⚠️ {system_name} Error: {stderr_output.strip()}")
+                        logging.error(f"{system_name} Error: {stderr_output.strip()}")
+
+                except Exception as e:
+                    print(f"❌ {system_name}: Error checking access - {e}")
+                    logging.error(f"Error checking access for {system_name}: {e}")
+
+    if not found_any:
+        print("❌ Error: No valid system directories found (expected Systems/UIs or Systems/DBs).")
+        logging.error("No system directories found.")
+
+    return access_list
+
+
+def find_script(system_name):
+    for directory in SYSTEMS_DIRS:
+        script_path = os.path.join(directory, f"{system_name.lower()}.py")
+        if os.path.exists(script_path):
+            return script_path
+    return None
+
+
+# ✅ Remove access from a system
+def remove_access(target_user, system_name, mock_mode):
+    script_path = find_script(system_name)
+    if script_path:
+        cmd = [sys.executable, script_path, "remove", target_user]
+        if mock_mode:
+            cmd.append("--mock")
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Removed access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Remove script for {system_name} not found.")
+
+
+# ✅ Grant access to a system
+def grant_access(target_user, system_name, mock_mode):
+    script_path = find_script(system_name)
+    if script_path:
+        cmd = [sys.executable, script_path, "grant", target_user]
+        if mock_mode:
+            cmd.append("--mock")
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Granted access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Grant script for {system_name} not found.")
+
+
+def interactive_access_management(mock_mode=False):
+    """Runs the interactive access management process."""
+
+    # ✅ Prompt for LDAP credentials interactively
+    ldap_user = prompt_if_missing(None, "Enter your LDAP username: ")
+    ldap_pass = getpass.getpass("Enter your LDAP password: ")
+
+    # ✅ Authenticate LDAP before proceeding
+    if not authenticate_ldap(ldap_user, ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+
+    # ✅ Get the target LDAP username
+    target_user = prompt_if_missing(None, "Enter the LDAP username of the target user: ")
+
+    # ✅ Check access first
+    access_list = check_user_access(target_user)
+
+    if access_list:
+        print("\n🔹 The user currently has access to these systems:")
+        for i, system in enumerate(access_list, start=1):
+            print(f"  {i}. {system}")
+
+        # ✅ Ask if access should be removed
+        remove_choice = input("\nWould you like to remove access from any of these systems? (yes/no): ").strip().lower()
+        if remove_choice == "yes":
+            system_to_remove = prompt_if_missing(None, "Enter the system name to remove access from: ")
+            if system_to_remove in access_list:
+                remove_access(target_user, system_to_remove)
+            else:
+                print("❌ Invalid selection. System not found in the access list.")
+
+    # ✅ Ask if access should be granted
+    grant_choice = input("\nWould you like to grant access to a new system? (yes/no): ").strip().lower()
+    if grant_choice == "yes":
+        system_to_grant = prompt_if_missing(None, "Enter the system name to grant access to: ")
+        grant_access(target_user, system_to_grant)
+
+    print("\n🔹 Access management completed.")
+
+# ✅ CLI Argument Parsing
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Manage SOC user access with LDAP authentication.")
+    parser.add_argument("action", choices=["check", "grant", "remove"])
+    parser.add_argument("target_user", help="Target LDAP username to manage")
+    parser.add_argument("--ldap_user", required=True, help="Your LDAP username")
+    parser.add_argument("--ldap_pass", required=True, help="Your LDAP password")
+    parser.add_argument("--rt_ticket", help="RT ticket number (optional)")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode")
+
+    args = parser.parse_args()
+
+    # Authenticate before proceeding
+    if not authenticate_ldap(args.ldap_user, args.ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+    # Route the action
+    if args.action == "check":
+        check_user_access(args.target_user)
+    elif args.action == "grant":
+        system_to_grant = prompt_if_missing(None, "Enter system to grant access to: ")
+        grant_access(args.target_user, system_to_grant, args.mock)
+    elif args.action == "remove":
+        system_to_remove = prompt_if_missing(None, "Enter system to remove access from: ")
+        remove_access(args.target_user, system_to_remove, args.mock)
+2025-05-09 18:19:13,207 - ERROR - Remove_postgres_db Error: 2025-05-09 17:41:28,475 - INFO - Checking PostgreSQL access...
+Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/remove_postgres_db.py", line 121, in <module>
+    username = input("Enter LDAP username to check/remove: ").strip()
+OSError: [Errno 5] Input/output error
+2025-05-09 18:19:13,292 - ERROR - Grant_postgres_db Error: 2025-05-09 18:19:13,246 - INFO - Checking PostgreSQL access...
+Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/grant_postgres_db.py", line 121, in <module>
+    username = input("Enter LDAP username to check/remove: ").strip()
+OSError: [Errno 5] Input/output error
+2025-05-09 18:19:13,322 - ERROR - Check_oracle_db Error: 2025-05-09 18:19:13,318 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 18:19:13,351 - ERROR - Remove_oracle_db Error: 2025-05-09 18:19:13,348 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 18:19:13,437 - ERROR - Check_postgres_db Error: 2025-05-09 18:19:13,390 - INFO - Checking PostgreSQL access...
+Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/check_postgres_db.py", line 121, in <module>
+    username = input("Enter LDAP username to check/remove: ").strip()
+OSError: [Errno 5] Input/output error
+2025-05-09 18:19:42,536 - INFO - Checking access for kboller
+2025-05-09 18:19:43,191 - ERROR - Pulley Error: 2025-05-09 18:19:43,178 - WARNING - ⚠️ Unexpected response while checking access: 500
+2025-05-09 18:19:43,367 - ERROR - Github Error: 2025-05-09 18:19:43,354 - WARNING - ⚠️ Unexpected response: 401
+2025-05-09 18:19:43,861 - ERROR - Jira Error: 2025-05-09 18:19:43,849 - ERROR - JIRA API request failed: 401 Client Error:  for url: https://jira.marchex.com/rest/api/latest/user?username=kboller
+2025-05-09 18:19:44,098 - ERROR - Azureportal Error: 2025-05-09 18:19:44,086 - ERROR - Failed to get Azure token: 400 Client Error: Bad Request for url: https://login.microsoftonline.com/your-tenant-id/oauth2/v2.0/token
+2025-05-09 18:19:45,900 - ERROR - Adtrack Error: 2025-05-09 18:19:45,893 - INFO - ❌ kboller does NOT have AdTrack UI access.
+2025-05-09 18:19:46,406 - ERROR - Pagerduty Error: 2025-05-09 18:19:46,394 - ERROR - ❌ Failed to fetch PagerDuty user data: 401 Client Error: Unauthorized for url: https://api.pagerduty.com/users?query=kboller
+2025-05-09 18:19:46,821 - ERROR - Grafana Error: 2025-05-09 18:19:46,809 - ERROR - ❌ Failed to retrieve Grafana users: HTTPSConnectionPool(host='grafana.marchex.com', port=443): Max retries exceeded with url: /api/org/users (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x7277c7679c00>: Failed to establish a new connection: [Errno 111] Connection refused'))
+2025-05-09 18:19:46,855 - ERROR - Aws Error: 2025-05-09 18:19:46,851 - ERROR - ❌ AWS CLI is not installed. Please install it using 'pip install awscli'.
+2025-05-09 18:19:47,356 - ERROR - Nexus Error: 2025-05-09 18:19:47,343 - INFO - ❌ kboller is NOT in Nexus.
+2025-05-09 18:19:47,620 - ERROR - Engage Error: 2025-05-09 18:19:47,606 - ERROR - ❌ Failed to check Engage access: 404 Client Error: Not Found for url: https://app.marchex.io/api/users?search=kboller
+2025-05-09 18:19:47,696 - ERROR - Rt_tickets Error: Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/UIs/rt_tickets.py", line 7, in <module>
+    import rt
+ModuleNotFoundError: No module named 'rt'
+2025-05-09 18:19:47,725 - ERROR - Nimui Error: 2025-05-09 18:19:47,722 - ERROR - ❌ Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 18:19:48,004 - ERROR - Sentry Error: 2025-05-09 18:19:47,992 - ERROR - ❌ Failed to check Sentry access for kboller: 401 Client Error: Unauthorized for url: https://sentry.io/api/0/organizations/callcap/members/
+2025-05-09 18:19:48,483 - ERROR - Chefdatabag Error: 2025-05-09 18:19:48,470 - ERROR - Error checking access: 401 - {"message":"Bad credentials","documentation_url":"https://docs.github.com/rest","status":"401"}
+2025-05-09 18:19:48,911 - ERROR - Marketingedge Error: 2025-05-09 18:19:48,899 - INFO - ❌ kboller is NOT in Marketing Edge.
+2025-05-09 18:19:49,386 - ERROR - Auth0 Error: 2025-05-09 18:19:49,373 - ERROR - Failed to get Auth0 token: 401 Client Error: Unauthorized for url: https://marchex.auth0.com/oauth/token
+2025-05-09 18:19:50,105 - ERROR - Snowflake_access Error: 2025-05-09 18:19:49,687 - INFO - Snowflake Connector for Python Version: 3.15.0, Python Version: 3.10.12, Platform: Linux-6.8.0-1027-azure-x86_64-with-glibc2.35
+2025-05-09 18:19:49,688 - INFO - Connecting to GLOBAL Snowflake domain
+2025-05-09 18:19:50,062 - ERROR - ❌ Failed to connect to Snowflake: 250001 (08001): None: Failed to connect to DB: sj79957.snowflakecomputing.com:443. Incorrect username or password was specified.
+2025-05-09 18:19:50,135 - ERROR - Afr Error: 2025-05-09 18:19:50,131 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 18:19:50,165 - ERROR - Grant_oracle_db Error: 2025-05-09 18:19:50,161 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+
+
+
+
+
+
+
+
+
+"""
+SOC Access Management Tool (CLI Only)
+---------------------------------------------------
+✅ CLI-based access management for SOC.
+✅ Secure LDAP authentication via Azure Key Vault.
+✅ Interactive access management (Check → Remove/Grant).
+✅ Independent from GUI (SOC Tool calls this script).
+"""
+
+#Example CLI Usage
+#python access_management.py check kboller
+#python access_management.py grant kboller --rt_ticket 12345
+#python access_management.py remove kboller --mock
+
+import argparse
+import logging
+import os
+import subprocess
+import sys
+import getpass
+from datetime import datetime
+from ldap3 import Server, Connection, NTLM, ALL, core, SIMPLE
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Utils"))
+from get_secrets import get_secret
+
+
+# ✅ Ensure UTF-8 encoding to prevent errors
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+# ✅ Set up base directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Get current script location
+SYSTEMS_DIRS = [
+    os.path.join(BASE_DIR, "Systems", "UIs"),
+    os.path.join(BASE_DIR, "Systems", "DBs")
+]  # Locate Systems/UIs and 'System/DBs' folder
+LOG_DIR = os.path.join(BASE_DIR, "Logs")  # Correct path to Logs/
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# ✅ Set up logging
+LOG_FILE = os.path.join(LOG_DIR, "access_management.log")
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+# ✅ Attempt to import rt_api.py (for RT ticket updates)
+try:
+    sys.path.insert(0, os.path.join(BASE_DIR, "Utils"))
+    from rt_api import add_comment
+except ModuleNotFoundError:
+    def add_comment(ticket, comment):
+        logging.warning(f"RT API not found. Skipping RT ticket update: {ticket}.")
+        print(f"⚠️ RT API not found. Skipping RT ticket update: {ticket}.")
+
+
+def authenticate_ldap(username, password):
+    ldap_server = "ldap.oci-iad-prd.marchex.com"  # Using the OpenLDAP host Tim referenced
+    user_dn = f"uid={username},ou=users,dc=marchex,dc=com"
+
+    print(f"🔐 Trying LDAP bind as DN: {user_dn} to {ldap_server}")
+
+    try:
+        server = Server(ldap_server, port=636, use_ssl=True, get_info=ALL)
+        conn = Connection(
+            server,
+            user=user_dn,
+            password=password,
+            authentication=SIMPLE
+        )
+
+        if not conn.bind():
+            print(f"❌ LDAP auth failed: {conn.result['description']}")
+            return False
+
+        print(f"✅ Authenticated to LDAP as {user_dn}")
+        return True
+
+    except Exception as e:
+        print(f"❌ LDAP auth exception: {e}")
+        return False
+
+
+# ✅ Prompt for missing inputs
+def prompt_if_missing(value, prompt_text):
+    """Prompt user for input if a value is missing."""
+    return value if value else input(prompt_text).strip()
+
+
+# ✅ Check user access
+def check_user_access(target_user):
+    """Checks all systems where the user has access."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"🔹 Checking access for {target_user} at {timestamp}")
+    logging.info(f"Checking access for {target_user}")
+
+    access_list = []
+
+    found_any = False
+
+    for directory in SYSTEMS_DIRS:
+        if not os.path.exists(directory):
+            continue  # silently skip missing dirs
+
+        found_any = True
+
+        for script in os.listdir(directory):
+            if script.endswith(".py"):
+                system_name = script.replace(".py", "").capitalize()
+                script_path = os.path.join(directory, script)
+
+                try:
+                    cmd = [sys.executable, script_path, "check", target_user]
+                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+                    stdout_output, stderr_output = process.communicate()
+
+                    if stdout_output.strip():
+                        for line in stdout_output.strip().splitlines():
+                            print(line)  # Print raw output line-by-line so GUI sees them
+                        access_list.append(system_name)
+
+                    if stderr_output.strip():
+                        print(f"⚠️ {system_name} Error: {stderr_output.strip()}")
+                        logging.error(f"{system_name} Error: {stderr_output.strip()}")
+
+                except Exception as e:
+                    print(f"❌ {system_name}: Error checking access - {e}")
+                    logging.error(f"Error checking access for {system_name}: {e}")
+
+    if not found_any:
+        print("❌ Error: No valid system directories found (expected Systems/UIs or Systems/DBs).")
+        logging.error("No system directories found.")
+
+    return access_list
+
+
+def find_script(system_name):
+    for directory in SYSTEMS_DIRS:
+        script_path = os.path.join(directory, f"{system_name.lower()}.py")
+        if os.path.exists(script_path):
+            return script_path
+    return None
+
+
+# ✅ Remove access from a system
+def remove_access(target_user, system_name, mock_mode):
+    script_path = find_script(system_name)
+    if script_path:
+        cmd = [sys.executable, script_path, "remove", target_user]
+        if mock_mode:
+            cmd.append("--mock")
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Removed access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Remove script for {system_name} not found.")
+
+
+# ✅ Grant access to a system
+def grant_access(target_user, system_name, mock_mode):
+    script_path = find_script(system_name)
+    if script_path:
+        cmd = [sys.executable, script_path, "grant", target_user]
+        if mock_mode:
+            cmd.append("--mock")
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Granted access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Grant script for {system_name} not found.")
+
+
+def interactive_access_management(mock_mode=False):
+    """Runs the interactive access management process."""
+
+    # ✅ Prompt for LDAP credentials interactively
+    ldap_user = prompt_if_missing(None, "Enter your LDAP username: ")
+    ldap_pass = getpass.getpass("Enter your LDAP password: ")
+
+    # ✅ Authenticate LDAP before proceeding
+    if not authenticate_ldap(ldap_user, ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+
+    # ✅ Get the target LDAP username
+    target_user = prompt_if_missing(None, "Enter the LDAP username of the target user: ")
+
+    # ✅ Check access first
+    access_list = check_user_access(target_user)
+
+    if access_list:
+        print("\n🔹 The user currently has access to these systems:")
+        for i, system in enumerate(access_list, start=1):
+            print(f"  {i}. {system}")
+
+        # ✅ Ask if access should be removed
+        remove_choice = input("\nWould you like to remove access from any of these systems? (yes/no): ").strip().lower()
+        if remove_choice == "yes":
+            system_to_remove = prompt_if_missing(None, "Enter the system name to remove access from: ")
+            if system_to_remove in access_list:
+                remove_access(target_user, system_to_remove)
+            else:
+                print("❌ Invalid selection. System not found in the access list.")
+
+    # ✅ Ask if access should be granted
+    grant_choice = input("\nWould you like to grant access to a new system? (yes/no): ").strip().lower()
+    if grant_choice == "yes":
+        system_to_grant = prompt_if_missing(None, "Enter the system name to grant access to: ")
+        grant_access(target_user, system_to_grant)
+
+    print("\n🔹 Access management completed.")
+
+# ✅ CLI Argument Parsing
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Manage SOC user access with LDAP authentication.")
+    parser.add_argument("action", choices=["check", "grant", "remove"])
+    parser.add_argument("target_user", help="Target LDAP username to manage")
+    parser.add_argument("--ldap_user", required=True, help="Your LDAP username")
+    parser.add_argument("--ldap_pass", required=True, help="Your LDAP password")
+    parser.add_argument("--rt_ticket", help="RT ticket number (optional)")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode")
+
+    args = parser.parse_args()
+
+    # Authenticate before proceeding
+    if not authenticate_ldap(args.ldap_user, args.ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+    # Route the action
+    if args.action == "check":
+        check_user_access(args.target_user)
+    elif args.action == "grant":
+        system_to_grant = prompt_if_missing(None, "Enter system to grant access to: ")
+        grant_access(args.target_user, system_to_grant, args.mock)
+    elif args.action == "remove":
+        system_to_remove = prompt_if_missing(None, "Enter system to remove access from: ")
+        remove_access(args.target_user, system_to_remove, args.mock)
+
+2025-05-09 18:28:53,691 - ERROR - Remove_postgres_db Error: 2025-05-09 18:19:50,203 - INFO - Checking PostgreSQL access...
+Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/remove_postgres_db.py", line 121, in <module>
+    username = input("Enter LDAP username to check/remove: ").strip()
+OSError: [Errno 5] Input/output error
+2025-05-09 18:28:53,777 - ERROR - Grant_postgres_db Error: 2025-05-09 18:28:53,731 - INFO - Checking PostgreSQL access...
+Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/grant_postgres_db.py", line 121, in <module>
+    username = input("Enter LDAP username to check/remove: ").strip()
+OSError: [Errno 5] Input/output error
+2025-05-09 18:28:53,807 - ERROR - Check_oracle_db Error: 2025-05-09 18:28:53,803 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 18:28:53,837 - ERROR - Remove_oracle_db Error: 2025-05-09 18:28:53,834 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 18:28:53,922 - ERROR - Check_postgres_db Error: 2025-05-09 18:28:53,876 - INFO - Checking PostgreSQL access...
+Traceback (most recent call last):
+  File "/home/kboller/socbot/SocTool/Systems/DBs/check_postgres_db.py", line 121, in <module>
+    username = input("Enter LDAP username to check/remove: ").strip()
+OSError: [Errno 5] Input/output error
+2025-05-09 18:29:30,840 - INFO - Checking access for kboller
+2025-05-09 18:32:34,478 - INFO - Checking access for kboller
+2025-05-09 18:36:11,752 - INFO - Checking access for kboller
+
+the above is now the only output i see in the logs and still nothing shows up in the gui of the tool
+2025-05-09 18:46:16,707 - INFO - Checking access for kboller
+
+
+
+
+the above is still the only output im getting in the logs and still not getting a confirmation of adtrack access in the gui either
+i feel like were going backwards in progress instead of forward.... ugh
+2025-05-09 18:58:47,641 - INFO - Checking access for kboller
+2025-05-09 18:58:48,208 - INFO - Pulley STDOUT: ❌ kboller does NOT have Pulley access.
+2025-05-09 18:58:48,220 - ERROR - Pulley Error: 2025-05-09 18:58:48,207 - WARNING - ⚠️ Unexpected response while checking access: 500
+2025-05-09 18:58:48,376 - INFO - Github STDOUT: ❌ kboller does NOT have GitHub access.
+2025-05-09 18:58:48,387 - ERROR - Github Error: 2025-05-09 18:58:48,375 - WARNING - ⚠️ Unexpected response: 401
+2025-05-09 18:58:48,860 - INFO - Jira STDOUT: ❌ kboller does NOT have access to JIRA.
+2025-05-09 18:58:48,872 - ERROR - Jira Error: 2025-05-09 18:58:48,859 - ERROR - JIRA API request failed: 401 Client Error:  for url: https://jira.marchex.com/rest/api/latest/user?username=kboller
+2025-05-09 18:58:49,263 - INFO - Azureportal STDOUT: ❌ kboller does NOT have Azure access.
+2025-05-09 18:58:49,275 - ERROR - Azureportal Error: 2025-05-09 18:58:49,262 - ERROR - Failed to get Azure token: 400 Client Error: Bad Request for url: https://login.microsoftonline.com/your-tenant-id/oauth2/v2.0/token
+2025-05-09 18:58:50,025 - INFO - Adtrack STDOUT: ❌ kboller does NOT have AdTrack UI access.
+2025-05-09 18:58:50,032 - ERROR - Adtrack Error: 2025-05-09 18:58:50,025 - INFO - ❌ kboller does NOT have AdTrack UI access.
+2025-05-09 18:58:50,523 - INFO - Pagerduty STDOUT: ❌ kboller does NOT have PagerDuty access.
+2025-05-09 18:58:50,534 - ERROR - Pagerduty Error: 2025-05-09 18:58:50,522 - ERROR - ❌ Failed to fetch PagerDuty user data: 401 Client Error: Unauthorized for url: https://api.pagerduty.com/users?query=kboller
+2025-05-09 18:58:50,636 - INFO - Callscoring STDOUT: 🔹 Access Check: ❌ No Access
+2025-05-09 18:58:50,920 - INFO - Grafana STDOUT: ❌ kboller does NOT have access to Grafana.
+2025-05-09 18:58:50,932 - ERROR - Grafana Error: 2025-05-09 18:58:50,920 - ERROR - ❌ Failed to retrieve Grafana users: HTTPSConnectionPool(host='grafana.marchex.com', port=443): Max retries exceeded with url: /api/org/users (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x747181e79c00>: Failed to establish a new connection: [Errno 111] Connection refused'))
+2025-05-09 18:58:50,966 - ERROR - Aws Error: 2025-05-09 18:58:50,962 - ERROR - ❌ AWS CLI is not installed. Please install it using 'pip install awscli'.
+2025-05-09 18:58:51,419 - INFO - Nexus STDOUT: ❌ kboller does NOT have Nexus access.
+2025-05-09 18:58:51,431 - ERROR - Nexus Error: 2025-05-09 18:58:51,419 - INFO - ❌ kboller is NOT in Nexus.
+2025-05-09 18:58:51,718 - ERROR - Engage Error: 2025-05-09 18:58:51,705 - ERROR - ❌ Failed to check Engage access: 404 Client Error: Not Found for url: https://app.marchex.io/api/users?search=kboller
+2025-05-09 18:58:51,794 - ERROR - Rt_tickets Error: Traceback (most recent call last):
+2025-05-09 18:58:51,794 - ERROR - Rt_tickets Error: File "/home/kboller/socbot/SocTool/Systems/UIs/rt_tickets.py", line 7, in <module>
+2025-05-09 18:58:51,794 - ERROR - Rt_tickets Error: import rt
+2025-05-09 18:58:51,794 - ERROR - Rt_tickets Error: ModuleNotFoundError: No module named 'rt'
+2025-05-09 18:58:51,824 - ERROR - Nimui Error: 2025-05-09 18:58:51,821 - ERROR - ❌ Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 18:58:52,117 - INFO - Sentry STDOUT: ❌ kboller does NOT have Sentry access.
+2025-05-09 18:58:52,130 - ERROR - Sentry Error: 2025-05-09 18:58:52,117 - ERROR - ❌ Failed to check Sentry access for kboller: 401 Client Error: Unauthorized for url: https://sentry.io/api/0/organizations/callcap/members/
+2025-05-09 18:58:52,291 - INFO - Chefdatabag STDOUT: ❌ kboller does NOT have access.
+2025-05-09 18:58:52,304 - ERROR - Chefdatabag Error: 2025-05-09 18:58:52,291 - ERROR - Error checking access: 401 - {"message":"Bad credentials","documentation_url":"https://docs.github.com/rest","status":"401"}
+2025-05-09 18:58:52,814 - INFO - Marketingedge STDOUT: ❌ kboller does NOT have Marketing Edge access.
+2025-05-09 18:58:52,826 - ERROR - Marketingedge Error: 2025-05-09 18:58:52,814 - INFO - ❌ kboller is NOT in Marketing Edge.
+2025-05-09 18:58:53,137 - INFO - Auth0 STDOUT: ❌ kboller does NOT have Auth0 access in prod.
+2025-05-09 18:58:53,149 - ERROR - Auth0 Error: 2025-05-09 18:58:53,137 - ERROR - Failed to get Auth0 token: 401 Client Error: Unauthorized for url: https://marchex.auth0.com/oauth/token
+2025-05-09 18:58:53,842 - INFO - Snowflake_access STDOUT: ❌ kboller does NOT have Snowflake access.
+2025-05-09 18:58:53,888 - ERROR - Snowflake_access Error: 2025-05-09 18:58:53,446 - INFO - Snowflake Connector for Python Version: 3.15.0, Python Version: 3.10.12, Platform: Linux-6.8.0-1027-azure-x86_64-with-glibc2.35
+2025-05-09 18:58:53,888 - ERROR - Snowflake_access Error: 2025-05-09 18:58:53,446 - INFO - Connecting to GLOBAL Snowflake domain
+2025-05-09 18:58:53,889 - ERROR - Snowflake_access Error: 2025-05-09 18:58:53,842 - ERROR - ❌ Failed to connect to Snowflake: 250001 (08001): None: Failed to connect to DB: sj79957.snowflakecomputing.com:443. Incorrect username or password was specified.
+2025-05-09 18:58:53,919 - ERROR - Afr Error: 2025-05-09 18:58:53,915 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+2025-05-09 18:58:53,949 - ERROR - Grant_oracle_db Error: 2025-05-09 18:58:53,945 - ERROR - Could not initialize Oracle client: DPI-1047: Cannot locate a 64-bit Oracle Client library: "/path/to/oracle_client/libclntsh.so: cannot open shared object file: No such file or directory". See https://cx-oracle.readthedocs.io/en/latest/user_guide/installation.html for help
+
+
+
+
+
+id like to make this more human readable and clear rather then looking like random characters, this output in the gui should only read 
+"_ has access to _" or 
+"_ does not have access to _"
+for each system.
+perfect that looks alot better, i think the next step in testing the adtrack script before moving on to the next system alphabetically is to try to grant myself access to adtrack  using the tool since i apparently dont already it, and then try to take it away using this soctool as well.
+i tried to grant myself access to adtrack but im not sure if it worked, nothing was ever output inthe gui or in the logs, and something i only just relized....i was never given the option to select what system i was trying to grant the user access to, how should we do this? maybe a list of all systems in the grant user access gui with a check box next to each system? i hope the test i just did didnt try to just grant me access to every system...
+still nothing new showing up in the access_management.log
+
+ill paste my access_management.py script below for your review.
+
+
+
+
+"""
+SOC Access Management Tool (CLI Only)
+---------------------------------------------------
+✅ CLI-based access management for SOC.
+✅ Secure LDAP authentication via Azure Key Vault.
+✅ Interactive access management (Check → Remove/Grant).
+✅ Independent from GUI (SOC Tool calls this script).
+"""
+
+#Example CLI Usage
+#python access_management.py check kboller
+#python access_management.py grant kboller --rt_ticket 12345
+#python access_management.py remove kboller --mock
+
+import argparse
+import logging
+import os
+import subprocess
+import sys
+import getpass
+from datetime import datetime
+from ldap3 import Server, Connection, NTLM, ALL, core, SIMPLE
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Utils"))
+from get_secrets import get_secret
+
+
+# ✅ Ensure UTF-8 encoding to prevent errors
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+# ✅ Set up base directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Get current script location
+SYSTEMS_DIRS = [
+    os.path.join(BASE_DIR, "Systems", "UIs"),
+    os.path.join(BASE_DIR, "Systems", "DBs")
+]  # Locate Systems/UIs and 'System/DBs' folder
+LOG_DIR = os.path.join(BASE_DIR, "Logs")  # Correct path to Logs/
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# ✅ Set up logging
+LOG_FILE = os.path.join(LOG_DIR, "access_management.log")
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+# ✅ Attempt to import rt_api.py (for RT ticket updates)
+try:
+    sys.path.insert(0, os.path.join(BASE_DIR, "Utils"))
+    from rt_api import add_comment
+except ModuleNotFoundError:
+    def add_comment(ticket, comment):
+        logging.warning(f"RT API not found. Skipping RT ticket update: {ticket}.")
+        print(f"⚠️ RT API not found. Skipping RT ticket update: {ticket}.")
+
+
+def authenticate_ldap(username, password):
+    ldap_server = "ldap.oci-iad-prd.marchex.com"  # Using the OpenLDAP host Tim referenced
+    user_dn = f"uid={username},ou=users,dc=marchex,dc=com"
+
+    print(f"🔐 Trying LDAP bind as DN: {user_dn} to {ldap_server}", flush=True)
+
+    try:
+        server = Server(ldap_server, port=636, use_ssl=True, get_info=ALL)
+        conn = Connection(
+            server,
+            user=user_dn,
+            password=password,
+            authentication=SIMPLE
+        )
+
+        if not conn.bind():
+            print(f"❌ LDAP auth failed: {conn.result['description']}", flush=True)
+            return False
+
+        print(f"✅ Authenticated to LDAP as {user_dn}", flush=True)
+        return True
+
+    except Exception as e:
+        print(f"❌ LDAP auth exception: {e}", flush=True)
+        return False
+
+
+# ✅ Prompt for missing inputs
+def prompt_if_missing(value, prompt_text):
+    """Prompt user for input if a value is missing."""
+    return value if value else input(prompt_text).strip()
+
+
+# ✅ Check user access
+def check_user_access(target_user):
+    """Checks all systems where the user has access."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"🔹 Checking access for {target_user} at {timestamp}", flush=True)
+    logging.info(f"Checking access for {target_user}")
+
+    access_list = []
+
+    found_any = False
+
+    for directory in SYSTEMS_DIRS:
+        if not os.path.exists(directory):
+            continue  # silently skip missing dirs
+
+        found_any = True
+
+        for script in os.listdir(directory):
+            if script.endswith(".py"):
+                system_name = script.replace(".py", "").capitalize()
+                script_path = os.path.join(directory, script)
+
+                try:
+                    cmd = [sys.executable, script_path, "check", target_user]
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        bufsize=1
+                    )
+
+                    stdout_output, stderr_output = process.communicate()
+
+                    # Combine and normalize output
+                    combined_output = (stdout_output or "") + (stderr_output or "")
+
+                    # Basic success/failure logic
+                    if "❌" in combined_output or "not have access" in combined_output.lower():
+                        print(f"❌ {system_name}: {target_user} does not have access.", flush=True)
+                    elif "✅" in combined_output or "has access" in combined_output.lower():
+                        print(f"✅ {system_name}: {target_user} has access.", flush=True)
+                        access_list.append(system_name)
+                    else:
+                        print(f"⚠️ {system_name}: Unable to determine access for {target_user}.", flush=True)
+
+                    # Still log raw output for debugging
+                    if stderr_output.strip():
+                        logging.error(f"{system_name} STDERR: {stderr_output.strip()}")
+
+                except Exception as e:
+                    print(f"❌ {system_name}: Error checking access - {e}", flush=True)
+                    logging.error(f"Error checking access for {system_name}: {e}")
+
+    if not found_any:
+        print("❌ Error: No valid system directories found (expected Systems/UIs or Systems/DBs).")
+        logging.error("No system directories found.")
+
+    elif not access_list:
+        print(f"❌ {target_user} has no access to any known systems.", flush=True)
+
+    return access_list
+
+
+def find_script(system_name):
+    for directory in SYSTEMS_DIRS:
+        script_path = os.path.join(directory, f"{system_name.lower()}.py")
+        if os.path.exists(script_path):
+            return script_path
+    return None
+
+
+# ✅ Remove access from a system
+def remove_access(target_user, system_name, mock_mode):
+    script_path = find_script(system_name)
+    if script_path:
+        cmd = [sys.executable, script_path, "remove", target_user]
+        if mock_mode:
+            cmd.append("--mock")
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Removed access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Remove script for {system_name} not found.")
+
+
+# ✅ Grant access to a system
+def grant_access(target_user, system_name, mock_mode):
+    script_path = find_script(system_name)
+    if script_path:
+        cmd = [sys.executable, script_path, "grant", target_user]
+        if mock_mode:
+            cmd.append("--mock")
+        subprocess.run(cmd, text=True, encoding="utf-8")
+        print(f"✅ Granted access to {system_name} for {target_user}")
+    else:
+        print(f"❌ Grant script for {system_name} not found.")
+
+
+def interactive_access_management(mock_mode=False):
+    """Runs the interactive access management process."""
+
+    # ✅ Prompt for LDAP credentials interactively
+    ldap_user = prompt_if_missing(None, "Enter your LDAP username: ")
+    ldap_pass = getpass.getpass("Enter your LDAP password: ")
+
+    # ✅ Authenticate LDAP before proceeding
+    if not authenticate_ldap(ldap_user, ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+
+    # ✅ Get the target LDAP username
+    target_user = prompt_if_missing(None, "Enter the LDAP username of the target user: ")
+
+    # ✅ Check access first
+    access_list = check_user_access(target_user)
+
+    if access_list:
+        print("\n🔹 The user currently has access to these systems:")
+        for i, system in enumerate(access_list, start=1):
+            print(f"  {i}. {system}")
+
+        # ✅ Ask if access should be removed
+        remove_choice = input("\nWould you like to remove access from any of these systems? (yes/no): ").strip().lower()
+        if remove_choice == "yes":
+            system_to_remove = prompt_if_missing(None, "Enter the system name to remove access from: ")
+            if system_to_remove in access_list:
+                remove_access(target_user, system_to_remove)
+            else:
+                print("❌ Invalid selection. System not found in the access list.")
+
+    # ✅ Ask if access should be granted
+    grant_choice = input("\nWould you like to grant access to a new system? (yes/no): ").strip().lower()
+    if grant_choice == "yes":
+        system_to_grant = prompt_if_missing(None, "Enter the system name to grant access to: ")
+        grant_access(target_user, system_to_grant)
+
+    print("\n🔹 Access management completed.")
+
+# ✅ CLI Argument Parsing
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Manage SOC user access with LDAP authentication.")
+    parser.add_argument("action", choices=["check", "grant", "remove"])
+    parser.add_argument("target_user", help="Target LDAP username to manage")
+    parser.add_argument("--ldap_user", required=True, help="Your LDAP username")
+    parser.add_argument("--ldap_pass", required=True, help="Your LDAP password")
+    parser.add_argument("--rt_ticket", help="RT ticket number (optional)")
+    parser.add_argument("--mock", action="store_true", help="Enable mock mode")
+
+    args = parser.parse_args()
+
+    # Authenticate before proceeding
+    if not authenticate_ldap(args.ldap_user, args.ldap_pass):
+        print("❌ LDAP Authentication Failed. Access Denied.")
+        sys.exit(1)
+
+    # Route the action
+    if args.action == "check":
+        check_user_access(args.target_user)
+    elif args.action == "grant":
+        system_to_grant = prompt_if_missing(None, "Enter system to grant access to: ")
+        grant_access(args.target_user, system_to_grant, args.mock)
+    elif args.action == "remove":
+        system_to_remove = prompt_if_missing(None, "Enter system to remove access from: ")
+        remove_access(args.target_user, system_to_remove, args.mock)
+these are the only credentials i have for adtrack so it sounds like the adtrack DB soc user has only read access and not write access then? this makes me wonder if maybe the adtrack DB and adtrack UI should be treated as 2 separate entities? lets review the SOP for adtrack for the SOC
+
+
+
+
+
+SOC SOP uiAccessAdTrack
+SOC SOP uiAccessAdTrack
+Jump to navigationJump to search
+
+Contents
+1	Description
+2	Adding Access
+2.1	If the user doesn't ask for "Staff level", email them asking them if they do and make sure to give them the URL for Adtrack Account standards to help them
+2.1.1	NOTE
+3	Removing Access
+Description
+This SOP is for adding and removing access for the Adtrack UI, aka Marchex.IO
+
+Adding AccessRemoving Access
+
+When an account needs to be added by request/ticket use the following steps.
+
+
+If a user requests access to the Adtrack UI also called Marchex.io and need access to the tool. Most of our requests are for "staff level" access. See "Adtrack Account standards" link below
+
+Adtrack Account standards 
+If the user doesn't ask for "Staff level", email them asking them if they do and make sure to give them the URL for Adtrack Account standards to help them
+http://wiki.marchex.com/index.php/SOC_SOP_adtrackUIAccountStandards
+
+1. Log into Adtrack
+
+Service Account & Password found in Bitwarden
+
+2. Click the Client List tab in the UI.
+
+3. Unless specified in the ticket create their account in the following group:
+
+Marchex Voice Services (nee Voicestar) (This has been the historic place to put accounts for Marchex users.)
+
+Note:
+
+Sometimes you will have to match an account with another account.
+The easiest way to do that is to open a two tabs in your browser.
+In the first one, search in "Client list" using the target email (user to copy)
+Then follow the below steps and just match up all the permissions.
+4. Click on the Account Name, it will drop down, and click Account Settings.
+
+5. Click Users
+
+6. Click "New user".
+
+7. Fill in the user's information:
+
+Real Name
+Email
+Password [Password Gen]
+NOTE:
+
+If the email account is already in use, the tool will not let you use it again. You either have to alter the email with a Capital letter or find the other account and update that one.
+
+8. Click submit at the bottom.
+
+9. Search for the users account once more to provision it.
+
+10. Using either given credentials from another account (Not preferred method) or [staff level] provision the account and click "update" at the bottom.
+
+There are three specific pieces that Require more than the users manager approval: Bulk create /update Campaigns & accounts, Billing Write , and Edit Staff Permissions . See above staff level link.
+
+11. Email the credentials to the user.
+
+
+NOTE
+Adtrack staff tools exist Here and will soon (hopefully) have a staff search function, at which point the above instructions will be thankfully obsolete.
+
+
+
+Categories: SOCSOC SOP
+Navigation menu
+KbollerTalkPreferencesWatchlistContributionsLog out
+PageDiscussionReadEditView historyWatch
+More
+Search
+Search Marchex Mediawiki
+Main page
+Recent changes
+Random page
+Help about MediaWiki
+Tools
+What links here
+Related changes
+Upload file
+Special pages
+Printable version
+Permanent link
+Page information
+Browse properties
+This page was last edited on 18 September 2019, at 15:06.
+Privacy policyAbout Marchex MediawikiDisclaimers
+Powered by MediaWikiPowered by Semantic MediaWiki
+
+
+Removing Access
+
+When an account needs to be removed either from a separation or SOX audit or team change use the following steps.
+
+
+1. Log onto [AdtrackUI/Marchex.io]
+
+Service Account & Password found in Keypass
+
+2. Click on "Client List"
+
+3. In the top right enter the email address of the user you wish to remove.
+
+This will return account groups with the email addresses in the users.
+
+4. For all account groups found, perform the following:
+
+Click on the account, it will drop down. click Account Settings
+Click Users
+Search again in the top right corner for the user's email address
+Click on the correct user
+Click User Settings
+Set the status to disabled
+Click Update
+
+
+
+
+Marchex, Inc. Request TrackerRT for Marchex
+#723733: AdtrackDB and Aqua Data Access for arice
+Home»
+Tickets»
+Tools»
+Logged in as kboller»
+Display
+History
+Basics
+People
+Dates
+Links
+Jumbo
+Reminders
+Actions»
+Add Bookmark
+Search...
+  
+Carrier Relations
+Ticket metadata
+The Basics
+Id:	723733
+Status:	resolved
+Priority:	3/99
+Queue:	Production
+Custom Fields
+TicketType:	(no value)
+Severity:	(no value)
+Product/Service:	(no value)
+Tag:	(no value)
+Escalation:	(no value)
+Two-Way Contact:	(no value)
+SOC Action:	(no value)
+People
+Owner:	Nobody in particular
+Requestors:	SOC Team
+Cc:	
+AdminCc:	
+Attachments
+image001.png
+Fri Feb 09 11:21:50 2024 (4.3k) by Allison Rice
+Fri Feb 02 07:32:07 2024 (4.3k) by Allison Rice
+Thu Feb 01 16:02:04 2024 (3k) by Amanda Cavataio
+Thu Feb 01 15:33:09 2024 (3k) by SOC Team
+Thu Feb 01 15:20:26 2024 (3k) by Amanda Cavataio
+Thu Feb 01 15:01:16 2024 (4.3k) by SOC Team
+Thu Feb 01 14:12:30 2024 (3k) by SOC Team
+image002.png
+Thu Feb 01 16:02:04 2024 (4.3k) by Amanda Cavataio
+Thu Feb 01 15:33:09 2024 (4.3k) by SOC Team
+Thu Feb 01 15:20:26 2024 (4.3k) by Amanda Cavataio
+Thu Feb 01 15:05:14 2024 (4.3k) by SOC Team
+image003.png
+Thu Feb 01 15:05:14 2024 (3k) by SOC Team
+Reminders
+New reminder:
+Subject:	
+Owner:	
+Kenneth Boller
+Due:	
+Dates
+Created:	Thu Feb 01 14:12:29 2024
+Starts:	Not set
+Started:	Thu Feb 01 14:36:57 2024
+Last Contact:	Fri Feb 09 11:35:24 2024
+Due:	Not set
+Closed:	Fri Feb 09 11:35:24 2024
+Updated:	Fri Feb 09 11:35:25 2024 by Corey Hughes
+LinksGraph
+Depends on : (Create)	
+Depended on by : (Create)	
+Parents : (Create)	
+Children : (Create)	
+Refers to : (Create)	
+Referred to by : (Create)	
+
+HistoryShow all quoted text — Show full headers
+#
+Thu Feb 01 14:12:30 2024 SOC Team - Ticket created[Reply] [Comment]
+Subject:	AdtrackDB and Aqua Data Access for arice
+Date:	Thu, 1 Feb 2024 22:12:26 +0000
+To:	Production Operations-Requests <production-requests@marchex.com>
+From:	SOC <soc@marchex.com>
+Download (untitled) / with headers
+text/plain 518b
+From: Amanda Cavataio <acavataio@marchex.com>
+Sent: Thursday, February 1, 2024 1:48 PM
+To: SOC <soc@marchex.com>
+Cc: Allison Rice <arice@marchex.com>
+Subject: AdtrackDB and Aqua Data Access for arice
+
+Hi SOC!
+
+Could someone please provide read-only AdtrackDB and Aqua Data for Allison Rice (arice)? Her access should mirror mine, credway, and jnewell.
+
+Thank you,
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+Download (untitled) / with headers
+text/html 4.3k
+Download image001.png
+image/png 3k
+image001.png
+#
+Thu Feb 01 14:13:34 2024 Corey Hughes - Taken
+#
+Thu Feb 01 14:36:56 2024 Corey Hughes - Correspondence added[Reply] [Comment]
+Download (untitled) / with headers
+text/plain 201b
+SOP:
+
+https://wiki.marchex.com/index.php/SOC_SOP_DBPostgres
+
+TRIAGE:
+
+User "arice" already has a read-only account on AdtrackDB. SOC does not grant Aqua Data access, that is likely handled by helpdesk.
+#
+Thu Feb 01 14:36:57 2024 The RT System itself - Status changed from 'new' to 'open'
+#
+Thu Feb 01 15:01:16 2024 SOC Team - Correspondence added[Reply] [Comment]
+CC:	Production Operations-Requests <production-requests@marchex.com>
+Subject:	[Marchex #723733] AdtrackDB and Aqua Data Access for arice
+Date:	Thu, 1 Feb 2024 23:01:13 +0000
+To:	Allison Rice <arice@marchex.com>
+From:	SOC <soc@marchex.com>
+Download (untitled) / with headers
+text/plain 720b
+Hi Allison,
+
+Amanda reached out and asked us to grant you access to AdtrackDB as well as Aqua Data Studio. It appears you already have a read-only account on AdtrackDB, but we can reset your password for you if needed. The SOC team doesn't handle access for Aqua Data Studio, but if you don't have access, we can pass your request over to helpdesk and they should be able to get your sorted. Please let us know how you would like to proceed!
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image002.png@01D2FEDF.8E888740]<http://www.marchex.com/>
+Download (untitled) / with headers
+text/html 4.3k
+Download image001.png
+image/png 4.3k
+image001.png
+#
+Thu Feb 01 15:05:14 2024 SOC Team - Correspondence added[Reply] [Comment]
+CC:	Production Operations-Requests <production-requests@marchex.com>
+Subject:	RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+Date:	Thu, 1 Feb 2024 23:05:11 +0000
+To:	Amanda Cavataio <acavataio@marchex.com>
+From:	SOC <soc@marchex.com>
+Download (untitled) / with headers
+text/plain 932b
+Hi Amanda,
+
+It looks like Allison already has a read-only account on AdtrackDB. I've reached out to ask if they need a password reset.
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image002.png@01D2FEDF.8E888740]<http://www.marchex.com/>
+
+
+From: Amanda Cavataio <acavataio@marchex.com>
+Sent: Thursday, February 1, 2024 1:48 PM
+To: SOC <soc@marchex.com>
+Cc: Allison Rice <arice@marchex.com>
+Subject: AdtrackDB and Aqua Data Access for arice
+
+Hi SOC!
+
+Could someone please provide read-only AdtrackDB and Aqua Data for Allison Rice (arice)? Her access should mirror mine, credway, and jnewell.
+
+Thank you,
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+Download (untitled) / with headers
+text/html 6.8k
+Download image002.png
+image/png 4.3k
+image002.png
+Download image003.png
+image/png 3k
+image003.png
+#
+Thu Feb 01 15:06:20 2024 Corey Hughes - Status changed from 'open' to 'stalled'
+#
+Thu Feb 01 15:06:20 2024 Corey Hughes - Untaken
+#
+Thu Feb 01 15:20:26 2024 Amanda Cavataio - Correspondence added[Reply] [Comment]
+CC:	Production Operations-Requests <production-requests@marchex.com>
+Subject:	RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+Date:	Thu, 1 Feb 2024 23:20:22 +0000
+To:	SOC <soc@marchex.com>
+From:	Amanda Cavataio <acavataio@marchex.com>
+Download (untitled) / with headers
+text/plain 1.5k
+Oh great! I had her check to see if she had Aqua Data on her machine and she said no, so please hook her up with that once she's set with a new password.
+
+Thanks!!
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+
+
+From: SOC <soc@marchex.com>
+Sent: Thursday, February 1, 2024 3:05 PM
+To: Amanda Cavataio <acavataio@marchex.com>
+Cc: Production Operations-Requests <production-requests@marchex.com>
+Subject: RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Hi Amanda,
+
+It looks like Allison already has a read-only account on AdtrackDB. I've reached out to ask if they need a password reset.
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image002.png@01DA5522.2998F4F0]<http://www.marchex.com/>
+
+
+From: Amanda Cavataio <acavataio@marchex.com<mailto:acavataio@marchex.com>>
+Sent: Thursday, February 1, 2024 1:48 PM
+To: SOC <soc@marchex.com<mailto:soc@marchex.com>>
+Cc: Allison Rice <arice@marchex.com<mailto:arice@marchex.com>>
+Subject: AdtrackDB and Aqua Data Access for arice
+
+Hi SOC!
+
+Could someone please provide read-only AdtrackDB and Aqua Data for Allison Rice (arice)? Her access should mirror mine, credway, and jnewell.
+
+Thank you,
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+Download (untitled) / with headers
+text/html 9.6k
+Download image001.png
+image/png 3k
+image001.png
+Download image002.png
+image/png 4.3k
+image002.png
+#
+Thu Feb 01 15:20:26 2024 The RT System itself - Status changed from 'stalled' to 'open'
+#
+Thu Feb 01 15:25:39 2024 Corey Hughes - Taken
+#
+Thu Feb 01 15:33:09 2024 SOC Team - Correspondence added[Reply] [Comment]
+CC:	Production Operations-Requests <production-requests@marchex.com>
+Subject:	RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+Date:	Thu, 1 Feb 2024 23:33:05 +0000
+To:	Amanda Cavataio <acavataio@marchex.com>
+From:	SOC <soc@marchex.com>
+Download (untitled) / with headers
+text/plain 2.2k
+Hey Amanda,
+
+I'll have to forward that to helpdesk as the SOC doesn't actually handle the installation for AquaData.
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image002.png@01D2FEDF.8E888740]<http://www.marchex.com/>
+
+
+From: Amanda Cavataio <acavataio@marchex.com>
+Sent: Thursday, February 1, 2024 3:20 PM
+To: SOC <soc@marchex.com>
+Cc: Production Operations-Requests <production-requests@marchex.com>
+Subject: RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Oh great! I had her check to see if she had Aqua Data on her machine and she said no, so please hook her up with that once she's set with a new password.
+
+Thanks!!
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+
+
+From: SOC <soc@marchex.com<mailto:soc@marchex.com>>
+Sent: Thursday, February 1, 2024 3:05 PM
+To: Amanda Cavataio <acavataio@marchex.com<mailto:acavataio@marchex.com>>
+Cc: Production Operations-Requests <production-requests@marchex.com<mailto:production-requests@marchex.com>>
+Subject: RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Hi Amanda,
+
+It looks like Allison already has a read-only account on AdtrackDB. I've reached out to ask if they need a password reset.
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image002.png@01DA5522.D82FC7F0]<http://www.marchex.com/>
+
+
+From: Amanda Cavataio <acavataio@marchex.com<mailto:acavataio@marchex.com>>
+Sent: Thursday, February 1, 2024 1:48 PM
+To: SOC <soc@marchex.com<mailto:soc@marchex.com>>
+Cc: Allison Rice <arice@marchex.com<mailto:arice@marchex.com>>
+Subject: AdtrackDB and Aqua Data Access for arice
+
+Hi SOC!
+
+Could someone please provide read-only AdtrackDB and Aqua Data for Allison Rice (arice)? Her access should mirror mine, credway, and jnewell.
+
+Thank you,
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+Download (untitled) / with headers
+text/html 12.7k
+Message body is not shown because it is too large.
+
+Download image001.png
+image/png 3k
+image001.png
+Download image002.png
+image/png 4.3k
+image002.png
+#
+Thu Feb 01 15:37:03 2024 Corey Hughes - Status changed from 'open' to 'stalled'
+#
+Thu Feb 01 15:37:04 2024 Corey Hughes - Untaken
+#
+Thu Feb 01 16:02:04 2024 Amanda Cavataio - Correspondence added[Reply] [Comment]
+CC:	Production Operations-Requests <production-requests@marchex.com>
+Subject:	RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+Date:	Fri, 2 Feb 2024 00:02:00 +0000
+To:	SOC <soc@marchex.com>
+From:	Amanda Cavataio <acavataio@marchex.com>
+Download (untitled) / with headers
+text/plain 2.8k
+Sounds good and thanks for your help Corey!
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+
+
+From: SOC <soc@marchex.com>
+Sent: Thursday, February 1, 2024 3:33 PM
+To: Amanda Cavataio <acavataio@marchex.com>
+Cc: Production Operations-Requests <production-requests@marchex.com>
+Subject: RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Hey Amanda,
+
+I'll have to forward that to helpdesk as the SOC doesn't actually handle the installation for AquaData.
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image002.png@01DA5527.FBCDE070]<http://www.marchex.com/>
+
+
+From: Amanda Cavataio <acavataio@marchex.com<mailto:acavataio@marchex.com>>
+Sent: Thursday, February 1, 2024 3:20 PM
+To: SOC <soc@marchex.com<mailto:soc@marchex.com>>
+Cc: Production Operations-Requests <production-requests@marchex.com<mailto:production-requests@marchex.com>>
+Subject: RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Oh great! I had her check to see if she had Aqua Data on her machine and she said no, so please hook her up with that once she's set with a new password.
+
+Thanks!!
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+
+
+From: SOC <soc@marchex.com<mailto:soc@marchex.com>>
+Sent: Thursday, February 1, 2024 3:05 PM
+To: Amanda Cavataio <acavataio@marchex.com<mailto:acavataio@marchex.com>>
+Cc: Production Operations-Requests <production-requests@marchex.com<mailto:production-requests@marchex.com>>
+Subject: RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Hi Amanda,
+
+It looks like Allison already has a read-only account on AdtrackDB. I've reached out to ask if they need a password reset.
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image002.png@01DA5527.FBCDE070]<http://www.marchex.com/>
+
+
+From: Amanda Cavataio <acavataio@marchex.com<mailto:acavataio@marchex.com>>
+Sent: Thursday, February 1, 2024 1:48 PM
+To: SOC <soc@marchex.com<mailto:soc@marchex.com>>
+Cc: Allison Rice <arice@marchex.com<mailto:arice@marchex.com>>
+Subject: AdtrackDB and Aqua Data Access for arice
+
+Hi SOC!
+
+Could someone please provide read-only AdtrackDB and Aqua Data for Allison Rice (arice)? Her access should mirror mine, credway, and jnewell.
+
+Thank you,
+
+Amanda Cavataio | Carrier Relations Manager
+P: 206.331.3375
+E: acavataio@marchex.com<mailto:acavataio@marchex.com>
+[marchex.com]<https://marchex.com/>
+Download (untitled) / with headers
+text/html 15.4k
+Message body is not shown because it is too large.
+
+Download image001.png
+image/png 3k
+image001.png
+Download image002.png
+image/png 4.3k
+image002.png
+#
+Thu Feb 01 16:02:04 2024 The RT System itself - Status changed from 'stalled' to 'open'
+#
+Thu Feb 01 16:07:16 2024 Timothe Harmon - Taken
+#
+Thu Feb 01 16:11:04 2024 Timothe Harmon - Queue changed from Production to Helpdesk
+#
+Thu Feb 01 16:11:04 2024 The RT System itself - Owner forcibly changed from tharmon to Nobody
+#
+Thu Feb 01 16:32:48 2024 Corey Hughes - Status changed from 'open' to 'stalled'
+#
+Thu Feb 01 16:32:48 2024 Corey Hughes - Queue changed from Helpdesk to Production
+#
+Thu Feb 01 16:37:16 2024 Corey Hughes - Correspondence added[Reply] [Comment]
+Download (untitled) / with headers
+text/plain 131b
+ACTION:
+
+Created RT#723739 to get Aqua Data installed for user. Keeping this ticket stalled while waiting for a reply from Allison.
+#
+Thu Feb 01 16:37:16 2024 The RT System itself - Status changed from 'stalled' to 'open'
+#
+Thu Feb 01 16:37:43 2024 Corey Hughes - Status changed from 'open' to 'stalled'
+#
+Fri Feb 02 07:32:07 2024 Allison Rice - Correspondence added[Reply] [Comment]
+CC:	Production Operations-Requests <production-requests@marchex.com>
+Subject:	RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+Date:	Fri, 2 Feb 2024 15:32:02 +0000
+To:	SOC <soc@marchex.com>
+From:	Allison Rice <arice@marchex.com>
+Download (untitled) / with headers
+text/plain 1.2k
+Hi Corey,
+
+Can you please reset my password for the AdTrackDB and pass my request over to helpdesk for Aqua Data Studio?
+
+Thank you for your help!
+
+Allison Rice | Telecom Analyst
+P: 905.219.8218
+E: arice@marchex.com<mailto:arice@marchex.com>
+[marchex.com]<https://marchex.com/>
+
+
+From: SOC <soc@marchex.com>
+Sent: Thursday, February 1, 2024 6:01 PM
+To: Allison Rice <arice@marchex.com>
+Cc: Production Operations-Requests <production-requests@marchex.com>
+Subject: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Hi Allison,
+
+Amanda reached out and asked us to grant you access to AdtrackDB as well as Aqua Data Studio. It appears you already have a read-only account on AdtrackDB, but we can reset your password for you if needed. The SOC team doesn't handle access for Aqua Data Studio, but if you don't have access, we can pass your request over to helpdesk and they should be able to get your sorted. Please let us know how you would like to proceed!
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image001.png@01DA55C3.0E9A2E20]<http://www.marchex.com/>
+Download (untitled) / with headers
+text/html 8.1k
+Download image001.png
+image/png 4.3k
+image001.png
+#
+Fri Feb 02 07:32:08 2024 The RT System itself - Status changed from 'stalled' to 'open'
+#
+Fri Feb 02 07:41:16 2024 Dean Van Vlack - Taken
+#
+Fri Feb 02 07:47:25 2024 Dean Van Vlack - Comments added[Reply] [Comment]
+Download (untitled) / with headers
+text/plain 41b
+reset password and sent update via email.
+#
+Fri Feb 02 07:47:25 2024 Dean Van Vlack - Status changed from 'open' to 'resolved'
+#
+Fri Feb 09 11:21:50 2024 Allison Rice - Correspondence added[Reply] [Comment]
+CC:	Production Operations-Requests <production-requests@marchex.com>
+Subject:	RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+Date:	Fri, 9 Feb 2024 19:21:46 +0000
+To:	SOC <soc@marchex.com>
+From:	Allison Rice <arice@marchex.com>
+Download (untitled) / with headers
+text/plain 1.7k
+Hello,
+
+Happy Friday!
+
+I'm not sure if I missed an email or not, but was my password reset for this yet?
+
+Thanks,
+
+Allison Rice | Telecom Analyst
+P: 905.219.8218
+E: arice@marchex.com<mailto:arice@marchex.com>
+[marchex.com]<https://marchex.com/>
+
+
+From: Allison Rice
+Sent: Friday, February 2, 2024 10:32 AM
+To: SOC <soc@marchex.com>
+Cc: Production Operations-Requests <production-requests@marchex.com>
+Subject: RE: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Hi Corey,
+
+Can you please reset my password for the AdTrackDB and pass my request over to helpdesk for Aqua Data Studio?
+
+Thank you for your help!
+
+Allison Rice | Telecom Analyst
+P: 905.219.8218
+E: arice@marchex.com<mailto:arice@marchex.com>
+[marchex.com]<https://marchex.com/>
+
+
+From: SOC <soc@marchex.com<mailto:soc@marchex.com>>
+Sent: Thursday, February 1, 2024 6:01 PM
+To: Allison Rice <arice@marchex.com<mailto:arice@marchex.com>>
+Cc: Production Operations-Requests <production-requests@marchex.com<mailto:production-requests@marchex.com>>
+Subject: [Marchex #723733] AdtrackDB and Aqua Data Access for arice
+
+Hi Allison,
+
+Amanda reached out and asked us to grant you access to AdtrackDB as well as Aqua Data Studio. It appears you already have a read-only account on AdtrackDB, but we can reset your password for you if needed. The SOC team doesn't handle access for Aqua Data Studio, but if you don't have access, we can pass your request over to helpdesk and they should be able to get your sorted. Please let us know how you would like to proceed!
+
+Thanks,
+
+Corey Hughes | SERVICE OPERATIONS CENTER - Operator 1
+E chughes@marchex.com<mailto:chughes@marchex.com>
+
+Marchex Service Operations Center (SOC)
+P 206.331.3456   E soc@marchex.com<mailto:soc@marchex.com>
+
+[cid:image001.png@01DA5B63.4F5CE970]<http://www.marchex.com/>
+Download (untitled) / with headers
+text/html 11.7k
+Message body is not shown because it is too large.
+
+Download image001.png
+image/png 4.3k
+image001.png
+#
+Fri Feb 09 11:21:50 2024 The RT System itself - Status changed from 'resolved' to 'open'
+#
+Fri Feb 09 11:35:00 2024 Corey Hughes - Stolen from dvanvlack
+#
+Fri Feb 09 11:35:24 2024 Corey Hughes - Correspondence added[Reply] [Comment]
+Download (untitled) / with headers
+text/plain 57b
+ACTION:
+
+Reset AdtrackDB password and emailed it to user.
+#
+Fri Feb 09 11:35:24 2024 Corey Hughes - Status changed from 'open' to 'resolved'
+#
+Fri Feb 09 11:35:24 2024 Corey Hughes - Untaken
+»|« RT 4.0.13 Copyright 1996-2013 Best Practical Solutions, LLC.
+
+
+
+
+
+SOC SOP DBPostgres
+SOC SOP DBPostgres
+Jump to navigationJump to search
+
+Contents
+1	General
+1.1	Requirements
+1.2	Description
+1.2.1	AWS Stuff
+1.2.2	MCA Adtrack (vspool, vspoolint)
+1.2.3	ARC DB
+1.2.4	Audience DB
+1.2.5	Call Analytics DB
+1.2.6	CDR Shepherd
+1.2.7	cisigsetdb
+1.2.8	RS2, RS02
+1.2.9	CX Call Settings
+1.2.10	Helix Display Metrics
+1.2.11	DLM
+1.2.12	Fortknox DB
+1.2.13	Fortknox QA DB
+1.2.14	Fortknoxstage DB QA
+1.2.15	Fortknoxstage DB
+1.2.16	Jira DB
+1.2.17	KONG DB
+1.2.18	lotusdb (lotus)
+1.2.19	Search Performance Tools (LSP tools)
+1.2.20	MAS - Compliance Workflow
+1.2.21	MAS - Publisher Compliance
+1.2.22	MAS - Call Stack Data Service
+1.2.23	Identity Service (MI5)
+1.2.24	Search Analytics
+1.2.25	Omni Workflow
+1.2.26	Pulley DB
+1.2.27	Search Analytics MAM Foreign Data Wrapper
+1.2.28	Search Campaign Setup S4
+1.2.29	MCA Partner Credentials
+1.2.30	publisher portal
+1.2.31	TAX DB
+1.2.32	zuul db
+1.2.33	busmonitor db
+2	Manage Postgres Accounts
+GeneralManage Postgres Accounts
+Requirements
+Appropriate Approvals, Postgres access.
+
+
+Description
+This is an SOP outlining the process that the SOC follows in order to create or remove user accounts on Marchex's postgres DBs. Access Granted through these commands is Read Only access. If the user requires WRITE access, get appropriate authorization and then pass the ticket to the DBA on-call.
+
+For DBs <user> is always just the user alias, so "user" not "user@marchex.com". NOTE: for LDAP authenticating databases, this MUST match the user's LDAP exactly. If the user has a "-v" in their alias, you will need to put quotes around their alias in the query in order for the role to be created properly.
+
+NOTE: If a database is not referenced in SOC documentation, consult the DBA team before attempting to grant access
+
+NOTE: If you are seeing ERROR: cannot execute DROP (or CREATE) ROLE in a read-only transaction, that means you are working on a slave DB, you should switch to another DB ( this ONLY affects DB that are in AWS)
+
+
+Automated steps for adding users, The tedious manual steps are not needed. Do not remove them though.
+
+ssh soc2.sea1
+sudo su - socbot 
+cd  /site/socbot/scripts/
+python grantDBAccess.py
+
+When you run it, you'll be prompted to put in the username, a password for any dbs that aren't LDAP (this WILL show up as plain text so that you don't forget the password used when you send it to the user),
+and then finally a list of databases to grant access to. The list of databases are hostclasses without the 'db'.
+
+For example, llmicrositedb-master and llmicrositedb-slave will be under llmicrosite
+Unsure of what dbs you need? Well when it prompts you for your list of dbs, just type "m" and it'll show you all the available options.
+
+It will output when it has successfully created an account on which databases, it will also output if it fails to create an account on which databases.
+
+
+
+
+AWS Stuff
+
+Use this: https://wiki.marchex.com/index.php/SOC_SOP_DBRedShiftAWS
+
+
+MCA Adtrack (vspool, vspoolint)
+
+Hosts for Adtrack DB Use the same password for all of these, since they login in one place at vspoolint.sea1
+
+PROD = vsdb1.aws-us-east-1-vpc1.marchex.com
+QA = qa-vsdb1.aws-us-west-2-vpc4.marchex.com
+
+Note: Users do not connect directly to the database servers, instead they use the following connection information:
+
+Host: vspoolint.marchex.com
+Port: 5432
+Database: adtrack_ro
+
+
+
+How to grant access:
+1. Run the following command to use postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-adtrack/conf/pgpass psql -U postgres -d adtrack
+
+
+2.Run the following commands to create the account.
+
+CREATE ROLE <user alias> WITH PASSWORD '<password>' LOGIN CONNECTION LIMIT 3;
+GRANT adtrack_ro TO <user>;
+\q
+
+
+
+
+
+ARC DB
+
+Hosts for ARC DB
+
+Decommissioned
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-arc/conf/pgpass psql -d arc
+
+
+2. Create the user accounts by running the following commands:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT dcm_all_read,ldap_auth TO <user>;
+\q
+
+
+
+Audience DB
+
+Hosts for Audience DB Decommissioned
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-audience/conf/pgpass psql -d audience
+
+
+2. Create the user accounts by running the following commands:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT audience_ro,ldap_auth TO <user>;
+\q
+
+
+
+Call Analytics DB
+
+Hosts for Call Analytics DB
+
+QA Master: shs-stg-mc2-writer.db.marchex.io
+Prod Master: shs-prd-mc2-writer.db.marchex.io
+
+How to grant access:
+1. Run the following command to connect to the database:
+
+psql -h  shs-prd-mc2-writer.db.marchex.io -d postgres -U postgres
+
+
+2. Create the user accounts by running the following commands:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT call_analytics_ro,authzone_ro,workspace_ro,notification_ro,conversation_sharing_ro,ldap_auth TO <user>;
+\q
+
+
+
+CDR Shepherd
+
+Hosts for CDR Shepherd
+
+cdrshepdb.c5jiwwysxcra.us-east-1.rds.amazonaws.com, qa-cdrshepdb.c5jiwwysxcra.us-east-1.rds.amazonaws.com
+
+How to grant access:
+1. Run the following command to connect to the DB:
+
+psql -h cdrshepdb.c5jiwwysxcra.us-east-1.rds.amazonaws.com -d postgres -U postgres
+
+
+2.Create the user accounts by running the following commands:
+
+CREATE ROLE <user alias> WITH PASSWORD '<password>' LOGIN CONNECTION LIMIT 5;
+GRANT cdrshepherd_ro TO <user>;
+\q
+
+
+
+cisigsetdb
+
+Hosts for cisigsetdb / druid
+
+cidashboardb.c5jiwwysxcra.us-east-1.rds.amazonaws.com, qa-cidashboard.c5jiwwysxcra.us-east-1.rds.amazonaws.com
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+psql -h cidashboardb.c5jiwwysxcra.us-east-1.rds.amazonaws.com -d postgres -U postgres
+
+
+2. Create the user account by running this command on QA database:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT cisigset_ro, ldap_auth TO <user>;
+
+
+3. Create the user account by running this command on Production database:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT cisigset_ro, druid_ro, ldap_auth TO <user>;
+\q
+
+
+
+RS2, RS02
+rptdb.windows.marchex.com, rptsea01.windows.marchex.com, MarchexInstitute
+Route the ticket to the CORP IT queue .
+
+
+CX Call Settings
+
+Hosts for CX Call Settings
+
+ 10.80.128.15, 10.82.33.108
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-cxcs/conf/pgpass psql -d call_settings
+
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT cxcs_ro, ldap_auth TO <user>;
+\q
+
+
+
+Helix Display Metrics
+
+Hosts for Helix Display Metrics DB
+
+dispmetricsdb.som1, qa-dispmetricsdb.som1
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-dispmetrics/conf/pgpass psql -d dispmetrics
+
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT dispmetrics_ro, ldap_auth TO <user>;
+\q
+
+
+
+DLM
+
+Hosts for DLM db Decommissioned
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-dlm/conf/pgpass psql -d advertiser
+
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH LOGIN CONNECTION LIMIT 5;
+GRANT advertiser_ro, agent_search_ro, ldap_auth TO <user>;
+\q
+
+
+
+
+
+Fortknox DB
+
+Hosts for Fortknox DB
+
+The primary where these steps need to be run changes from time to time. Here are some (maybe all?) of the hosts to try:
+
+fortknoxdb1.aws-us-west-2-vpc2.marchex.com
+fortknoxdb2.aws-us-west-2-vpc2.marchex.com 
+fortknoxdb3.aws-us-west-2-vpc2.marchex.com
+
+
+Users do not connect directly to the database servers, instead they use the following connection information:
+Host: fortknoxpool.sad
+Port: 5432
+Database: warehouse_ro (read-only) or warehouse (read-write)
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-fortknox/conf/pgpass psql -d warehouse
+
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH PASSWORD '<password>' LOGIN CONNECTION LIMIT 5;
+GRANT "fk-read-only", "fk-sandbox-ro" TO <user>;
+\q
+
+
+
+Additional access levels - fortknox sandbox write access. (Requires approval from Chris K)
+GRANT "fk-sandbox-rw" TO <user>;
+\q
+
+
+
+Fortknox QA DB
+
+Hosts for Fortknox QA DB
+
+qa-fortknoxdb2.aws-us-west-2-vpc4.marchex.com
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-fortknox/conf/pgpass psql -d warehouse
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH PASSWORD '<password>' LOGIN CONNECTION LIMIT 5;
+GRANT "fk-read-only" TO <user>;
+\q
+
+
+
+Users do not connect directly to the database servers, instead they use the following connection information:
+Host: fortknoxpool.qa
+Port: 5432
+Database: warehouse_ro (read-only) or warehouse (read-write)
+
+
+
+Fortknoxstage DB QA
+
+Hosts for Fortknoxstage DB QA
+
+qa-fortknoxstagedb1.aws-us-west-2-vpc4.marchex.com, qa-fortknoxstagedb2.aws-us-west-2-vpc4.marchex.com 
+
+
+Users directly connect to the database servers in these environments.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-fortknoxstage/conf/pgpass psql -d staging
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH PASSWORD '<password>' LOGIN CONNECTION LIMIT 5;
+GRANT "fk-read-only" TO <user>;
+\q
+
+
+
+Fortknoxstage DB
+
+Hosts for Fortknoxstage DB
+
+fortknoxstagedb1.aws-us-west-2-vpc2.marchex.com, fortknoxstagedb2.aws-us-west-2-vpc2.marchex.com
+
+
+Users directly connect to the database servers in these environments.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-fortknoxstage/conf/pgpass psql -d staging
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH LOGIN CONNECTION LIMIT 5;
+GRANT "fk-read-only", ldap_auth TO <user alias>;
+\q
+
+
+
+Jira DB
+
+Hosts for Jira backend database
+
+jiradb2.aws-us-west-2-vpc2.marchex.com
+
+
+Users need justification and approval to have direct access to this database.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-jira/conf/pgpass psql -d jira
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH LOGIN CONNECTION LIMIT 5;
+GRANT jira_ro, ldap_auth TO <user alias>;
+\q
+
+
+
+KONG DB
+
+Hosts for Kong DB Decommissioned
+
+Users directly connect to the database servers in these environments.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-kong/conf/pgpass psql -d kong
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH LOGIN CONNECTION LIMIT 5;
+GRANT kong_ro, ldap_auth TO <user alias>;
+\q
+
+
+
+lotusdb (lotus)
+
+Hosts for Lotus DB Only need to add on the Master. Decommissioned
+
+ROLES lotus_rw (Read/Write) & lotus_ro (ReadOnly) 
+
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-lotus/conf/pgpass psql -d lotus
+
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH PASSWORD '<PASSWORD>' LOGIN CONNECTION LIMIT 5;
+GRANT lotus_ro,ldap_auth to <USER>;
+\q
+
+
+
+Search Performance Tools (LSP tools)
+
+Hosts for Search Performance Tools DB
+
+Decommissioned
+
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-lsperftools/conf/pgpass psql -d search_performance_tools
+
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH LOGIN CONNECTION LIMIT 5;
+GRANT lsperftools_ro, ldap_auth TO <user>;
+\q
+
+
+
+MAS - Compliance Workflow
+
+Hosts for MAS - Compliance Workflow
+
+Decommissioned
+Passwords are LDAP and therefore are not reset at the database.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-maswrkflow/conf/pgpass psql
+
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth, compliance_workflow_ro TO <user>;
+\q
+
+
+
+MAS - Publisher Compliance
+
+Hosts for MAS - Publisher Compliance Decommissioned
+
+Passwords are LDAP and therefore are not reset at the database.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-maswrkflow/conf/pgpass psql
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth, publisher_compliance_ro TO <user>;
+\q
+
+
+
+MAS - Call Stack Data Service
+
+Hosts for MAS - Call Stack Data Service Decommissioned
+
+Passwords are LDAP and therefore are not reset at the database.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-masmcm/conf/pgpass psql
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth TO <user>;
+ \q
+
+
+
+Identity Service (MI5)
+
+Hosts for Identity Service (MI5)
+
+QA Master:  qa-mchxauthdb1.aws-us-west-2-vpc4.marchex.com
+Prod Master:  mchxauthdb.som1
+Passwords are LDAP and therefore are not reset at the database.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-identity/conf/pgpass psql
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth, identity_system_ro TO <user>;
+\q
+
+
+
+Search Analytics
+
+Hosts for Search Analytics db
+
+QA Master:  qa-srcnlytcsdb1.aws-us-east-1-vpc3.marchex.com
+Prod Master:  srcnlytcsdb2.aws-us-east-1-vpc1.marchex.com
+PLEASE NOTE: If srcnlytcsdb2 is in slave mode, please try on other host of cluster.
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-srcnlytcs/conf/pgpass psql -d search_analytics
+
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT search_analytics_ro,report_setup_ro,ldap_auth,search_bigjoin_ro TO <user>;
+\q
+
+
+
+Omni Workflow
+
+Hosts for Omni Workflow db Decommissioned
+
+Passwords are LDAP and therefore are not reset at the database.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-omniworkflow/conf/pgpass psql
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth, rundeck_ro, workflow_stats_ro, workflow_metrics_ro TO <user>;
+\q
+
+
+
+Pulley DB
+
+Hosts for Pulley DB pulleydb.c5jiwwysxcra.us-east-1.rds.amazonaws.com
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-pulley/conf/pgpass psql -d pulley
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> WITH LOGIN CONNECTION LIMIT 5;
+GRANT "p-app-ro", ldap_auth TO <user>;
+\q
+
+
+
+Search Analytics MAM Foreign Data Wrapper
+
+Hosts for Search Analytics MAM Foreign Data Wrapper DB
+
+QA Master: qa-samamfdwdb.sea1
+
+Prod Master: samamfdwdb.som1
+
+This database uses LDAP for users, no password resets
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-mamfdw/conf/pgpass psql -d mamfdw
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth, mamfdw_ro TO <user>;
+\q
+
+
+
+Search Campaign Setup S4
+
+Hosts for Search Campaign Setup S4 DB
+
+Prod Master: srccmpgnsetupdb.som1
+QA Master: qa-srccmpgnsetupdb.som1
+
+This database uses LDAP for users, no password resets
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-srccmpgnsetup/conf/pgpass psql -d campaign_setup
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth, campaign_setup_ro, search_structure_ro TO <user>;
+\q
+
+
+
+MCA Partner Credentials
+
+Hosts for MCA Partner Credentials DB
+
+QA Master:  qa-vspcsdb.som1
+
+Prod Master: vspcsdb.som1
+
+This database uses LDAP for users, no password resets
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-vspcs/conf/pgpass psql
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth, partnercredential_service_ro, configuration_service_ro, mca_sms_ro TO <user>;
+\q
+
+
+
+publisher portal
+
+Hosts for publisher portal DB Decommissioned Database: publisher_portal_db
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-tax/conf/pgpass psql -d publisher_portal_db
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias> LOGIN CONNECTION LIMIT 5;
+GRANT app_publisher_portal_ro TO <user>;
+GRANT ldap_auth TO <user>;
+\q
+
+
+
+To revoke access:
+
+check their account first:
+
+\dg <user>
+
+
+If the user membership is only app_publisher_portal_ro, then:
+ DROP ROLE <user>
+ \q
+
+
+Otherwise
+REVOKE app_publisher_portal_ro FROM <user>;
+ 
+\q
+
+
+
+TAX DB
+
+Decommissioned
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-tax/conf/pgpass psql -d taxonomy_db
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user alias>  LOGIN CONNECTION LIMIT 5;
+GRANT taxonomy_ro TO <user>;
+GRANT ldap_auth TO <user>;
+\q
+
+
+
+To revoke access:
+1. First check the user access:
+
+\dg <user>
+
+
+If the user membership is only taxonomy_ro, then:
+DROP ROLE <user>;
+
+\q
+Otherwise:
+REVOKE taxonomy_ro FROM <user>;
+\q
+
+
+
+zuul db
+
+Hosts for zuul db
+
+QA Master:  zuuldb.qa
+
+Prod Master: 
+             zuuldb1.aws-us-west-2-vpc2.marchex.com
+             zuuldb2.aws-us-west-2-vpc2.marchex.com
+
+
+This database uses LDAP for users, no password resets
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-zuul/conf/pgpass psql -d zuul
+
+2. Create the user account by running this command:
+
+CREATE ROLE <user> LOGIN CONNECTION LIMIT 5;
+GRANT ldap_auth, zuul_ro TO <user>;
+\q
+
+
+
+busmonitor db
+
+Hosts for busmonitor db
+
+busmonitordb1.aws-us-west-2-vpc2.marchex.com
+sqlmonitor-ro, asq_mcacr_ro
+This database uses LDAP for users, no password resets.
+
+How to grant access:
+1. Run the following command to start postgres on the host:
+
+sudo -u postgres PGPASSFILE=/site/pgsql-busmonitor/conf/pgpass psql -U postgres -d postgres
+
+
+2. Create the user account by running this command:
+CREATE ROLE <user> LOGIN CONNECTION LIMIT 3;
+GRANT "asq_mcacr_ro", "sqlmonitor-ro" TO <user>;
+\q
+
+
+
+List of MCA related DB servers that are decommissioned.
+
+QA
+
+qa-audiencedb1.som1 qa-audiencedb2.som1 qa-omniworkflowdb1.aws-us-west-2-vpc4.marchex.com qa-omniworkflowdb2.aws-us-west-2-vpc4.marchex.com qa-srccmpgnsetupdb1.som1 qa-srccmpgnsetupdb2.som1 qa-srcnlytcsdb1.aws-us-east-1-vpc3.marchex.com qa-srcnlytcsdb2.aws-us-east-1-vpc3.marchex.com
+
+PROD
+
+audiencedb1.som1 audiencedb2.som1 omniworkflowdb1.aws-us-west-2-vpc2.marchex.com omniworkflowdb2.aws-us-west-2-vpc2.marchex.com srccmpgnsetupdb3.som1 srccmpgnsetupdb4.som1 srcnlytcsdb1.aws-us-east-1-vpc1.marchex.com srcnlytcsdb2.aws-us-east-1-vpc1.marchex.com
+
+
+
+
+
+Categories: SOCSOC SOP
+Navigation menu
+KbollerTalkPreferencesWatchlistContributionsLog out
+PageDiscussionReadEditView historyWatch
+More
+Search
+Search Marchex Mediawiki
+Main page
+Recent changes
+Random page
+Help about MediaWiki
+Tools
+What links here
+Related changes
+Upload file
+Special pages
+Printable version
+Permanent link
+Page information
+Browse properties
+This page was last edited on 1 May 2025, at 09:43.
+Privacy policyAbout Marchex MediawikiDisclaimers
+Powered by MediaWikiPowered by Semantic MediaWiki
+
+Manage Postgres Accounts
+Removal steps and Password steps for all Postgres hosts:
+
+To revoke access:
+DROP ROLE <user>;
+\q
+To reset the password for a user:
+ALTER USER <user> WITH PASSWORD '<password>';
+
+
+Want to check if they have an account?
+\du <UserName>
+are you telling me it is not at all possible to automate checking granting and removing access to the adtrackUI via my tool using python?
+
+It is technically possible to automate access management for AdTrack UI using Python — but only if:
+
+✅ You have a programmatic interface to work with, such as:
+A REST API – If the AdTrack UI provides an API for user management, Python can interact with it via requests.
+Direct DB write access – If AdTrack UI access is controlled via a backend database (e.g., at_user table), and you have write access and a documented schema, Python can manipulate it safely.
+Web Automation – You could use tools like Selenium to mimic browser interactions (e.g., filling in forms to create users), but this is fragile and not recommended unless there's no API.
+🚫 Current blockers based on your situation:
+You’re using a read-only DB user – This prevents inserts/updates needed to automate granting/removing access.
+There’s no known AdTrack UI API – All evidence suggests access is handled manually via the GUI (per SOP).
+The AdTrack UI appears to be a web portal with no automation hooks.
+🧠 Recommended Approach:
+Split the automation:
+adtrackDB.py: Automate check/remove (read-only) access to the database.
+adtrackUI.py: Instead of automating, use this as an interactive wrapper that:
+Logs the request.
+Opens a browser to the right UI page.
+Prompts the user to manually complete steps.
+Tracks actions in the access_management.log for auditability.
+
+This keeps the UI tool helpful without falsely implying automation is in place.
+
+Would you like help drafting a adtrackUI.py script that guides the user through the SOP with logging?
+
+i renamed my adtrack script to adtrackDB.py and moved it into the DB directory from the UI directory, i will start looking into who i should contact to get the SOC write permissions for the adtrack DB to continue working on and testing that script and in the mean time we will move on to the next UI script however, your responses are slowing down significantly and i think its time to open a new chat, but before we do that what i need for you now is for you to please summarize everything we did today for an update that i can post to the ADO board of this project and then i also need a summary of the entire project that i can use as a prompt for a new chatgpt conversation window for more accurate and efficient faster responses for tomorrow continued work on this tool.
+
+Absolutely — here are both summaries, formatted cleanly for direct use:
+
+✅ Daily Summary for ADO Board (May 9, 2025)
+
+SOC Tool: Access Management Development Progress
+
+Debugged access logging: Fixed missing entries in access_management.log by ensuring subprocess output from system scripts (e.g. adtrack.py) is captured and logged properly.
+Resolved multiple grant-related errors: Identified issues including incorrect SQL (ON CONFLICT without constraint), nonexistent columns (staff_level, name), and fixed parameter mismatches in grant_adtrack_access().
+Investigated DB permissions: Confirmed the SOC’s current credentials for adtrack_ro only allow read-only access, causing ReadOnlySqlTransaction errors on INSERT.
+Reviewed AdTrack SOPs:
+Determined that AdTrack UI access must currently be granted manually via the web interface.
+Identified that AdTrack UI and AdTrack DB should be treated as separate systems.
+Script restructuring:
+Renamed and moved adtrack.py to adtrackDB.py under the Systems/DBs/ folder.
+Prepared to split adtrackUI.py as a new script focused on manual guidance and SOP compliance for UI access.
+
+Next Steps:
+
+Contact DB admins to request write access for the AdTrack DB for SOC automation.
+Begin work on adtrackUI.py, designed to assist with manual UI access tasks per SOP until automation is possible.
+🧠 Project Summary (Prompt for New GPT Chat Session)
+
+Prompt for Tomorrow’s Chat:
+
+I’m working on a Python-based internal tool for the Marchex SOC. It’s designed to manage user access for various systems by checking, granting, and removing access through system-specific scripts organized under Systems/UIs and Systems/DBs.
+
+The tool authenticates using LDAP and logs all actions to access_management.log. Each system (e.g., AdTrack, Audience, Fortknox) has its own handler script. The main tool calls these handlers via subprocess and captures stdout/stderr for auditing.
+
+We've confirmed that AdTrack UI access must currently be managed manually (via SOP steps in a browser), while AdTrack DB is read-only for the SOC. We’ve split these out into adtrackUI.py (manual/SOP-driven) and adtrackDB.py (scripted DB access).
+
+In this session, continue assisting with writing, debugging, and testing scripts for additional UIs and DBs, while maintaining logging, security, and SOP compliance.
+
+Let me know if you’d like a Markdown-formatted version of the summaries or a pre-filled copy/paste snippet for ADO.

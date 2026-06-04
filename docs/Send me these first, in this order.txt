@@ -1,0 +1,47 @@
+Send me these first, in this order:
+
+README.md
+access_management.py
+soctool.py
+utils/get_secret.py
+config/creds.example.json
+
+Then we’ll make sure the core flow is clean:
+
+soctool.py
+   ↓ optional GUI only
+access_management.py
+   ↓ check / grant / remove router
+systems/UIs/*.py
+   ↓ individual system modules
+utils/get_secret.py
+   ↓ config/secrets loader
+logs/
+
+Big first cleanup target from your screenshots:
+
+You currently have duplicate/overlapping pieces:
+
+get_secret.py
+get_secrets.py
+secret.py
+utils.py
+rt_api.py in root
+utils/rt_api.py
+soctool.py
+soc_tool_gui.py
+access_management.py
+checkaccess.py
+GrantAccess.py
+separations.py
+
+We need to pick one true path before polishing scripts. Otherwise it turns into a spaghetti hydra.
+
+Recommended first rule:
+
+access_management.py = the only real controller
+soctool.py = optional GUI wrapper only
+systems/UIs/*.py = system-specific actions only
+utils/*.py = shared helpers only
+
+Send me access_management.py first. That’s the command tower. Once that’s solid, the rest becomes little plug-in goblins marching in formation.

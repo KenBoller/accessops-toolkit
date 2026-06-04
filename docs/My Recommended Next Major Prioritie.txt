@@ -1,0 +1,71 @@
+My Recommended Next Major Priorities
+HIGH PRIORITY NOW
+1. Architecture Documentation
+
+You NEED this now.
+
+Create:
+
+docs/architecture.md
+
+Include:
+
+folder structure
+workflow diagrams
+data relationships
+ticket lifecycle
+incident lifecycle
+onboarding lifecycle
+
+This massively increases recruiter readability.
+
+2. Better GUI
+
+Your current Tkinter GUI works.
+
+But now the backend deserves:
+
+tabs
+logs window
+incident dashboard
+ticket viewer
+onboarding panel
+
+Not immediately required...
+but now worth doing.
+
+3. REST API Layer
+
+This would MASSIVELY level up the project.
+
+Imagine:
+
+uvicorn api.main:app --reload
+
+with endpoints like:
+
+POST /alerts
+POST /outages
+GET /tickets
+GET /incidents
+POST /onboard
+
+That suddenly turns the project from:
+
+automation scripts
+
+into:
+
+automation platform
+4. Dashboard/UI
+
+Even simple:
+
+HTML
+FastAPI
+Flask
+Bootstrap
+
+would massively improve portfolio impact.
+
+Because visual systems photograph well for recruiters.

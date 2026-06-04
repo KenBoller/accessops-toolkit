@@ -1,0 +1,25 @@
+{
+    "alerts": [
+      {
+        "id": "alert-001",
+        "title": "CPU usage critical on app-server-01",
+        "severity": "critical",
+        "system": "monitoring",
+        "text": "CPU usage exceeded 95% for 10 minutes."
+      },
+      {
+        "id": "alert-002",
+        "title": "Disk usage warning on db-server-02",
+        "severity": "warning",
+        "system": "postgres",
+        "text": "Disk usage exceeded 80%."
+      },
+      {
+        "id": "alert-003",
+        "title": "API gateway major error rate",
+        "severity": "major",
+        "system": "api-gateway",
+        "text": "5xx error rate exceeded threshold."
+      }
+    ]
+  }

@@ -1,0 +1,52 @@
+Next Steps for SOC Access Management Project 🚀
+
+Now that all system scripts (check, grant, remove) have been developed and integrated with both the GUI (SOCTool) and CLI (access_management.py), the next phase will focus on security implementation, credential management, and testing.
+
+🔹 Next Phase: Security & Testing
+1️⃣ Set Up Azure Key Vault for Secure Credential Management
+
+Since multiple scripts require authentication credentials (LDAP, DB access, system APIs), we need to:
+✅ Create Azure Key Vault secrets for:
+
+LDAP authentication (ldap-username, ldap-password)
+SOC system credentials (soc-db-user, soc-db-pass, etc.)
+API Keys and service credentials for:
+AWS (aws_access_key, aws_secret_key)
+PagerDuty (pagerduty_api_key)
+Grafana (grafana_api_token)
+JIRA (jira_api_token)
+Auth0 (auth0_client_id, auth0_client_secret)
+Snowflake (snowflake_user, snowflake_password)
+And any other systems that require authentication
+
+✅ Update all scripts to retrieve credentials from Key Vault instead of hardcoding.
+✅ Test credential retrieval and error handling for missing or invalid secrets.
+
+2️⃣ End-to-End Testing & Debugging
+
+Once credentials are securely stored and integrated, we will test:
+🔹 Check access functionality across all system scripts.
+🔹 Grant & remove access workflows via CLI and GUI.
+🔹 Mock mode validation to ensure scripts behave correctly in test environments.
+🔹 Logging & error handling—ensuring failed operations log correctly and return actionable errors.
+
+✅ Unit tests for each script with valid/invalid user scenarios.
+✅ Integration tests—run access checks, grants, and removals across multiple systems.
+✅ Permission validation—ensuring the correct roles/privileges are assigned per SOP.
+
+3️⃣ Deploy & Finalize SOC Access Management Tool
+
+🔸 Confirm integration between GUI (SOCTool) & CLI (Access Management Script).
+🔸 Document user workflows for SOC team adoption.
+🔸 Deploy the tool for production use.
+🔸 Provide training/demo for SOC analysts.
+
+🔹 Final Milestone Goals
+
+✔ Secure all credentials via Azure Key Vault.
+✔ Ensure 100% script functionality with end-to-end testing.
+✔ Deploy SOC Access Management Tool into production.
+
+🔜 Post-testing review & refinements before final deployment! 🚀
+
+Let me know if anything should be prioritized or adjusted in the roadmap! ✅

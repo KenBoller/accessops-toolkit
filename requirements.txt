@@ -1,0 +1,2 @@
+# Core HTTP/API
+requests>=2.31.0

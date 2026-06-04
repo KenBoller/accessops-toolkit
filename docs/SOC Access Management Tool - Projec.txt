@@ -1,0 +1,45 @@
+SOC Access Management Tool - Project Summary & Progress Update
+🔹 Project Overview
+
+The SOC Access Management Tool is designed to streamline user access management across multiple systems within the Marchex SOC. It provides a unified interface for SOC analysts to check, grant, and remove access across various platforms while maintaining logging, RT ticket updates, and mock mode support.
+
+🔹 Core Features
+
+✔ Check User Access – Runs system-specific scripts to verify user permissions.
+✔ Grant User Access – Executes system-specific scripts to provision access.
+✔ Remove User Access – Ensures deprovisioning using system removal scripts.
+✔ RT Ticket Logging – Automatically updates RT tickets with access changes.
+✔ GUI & CLI Modes – Users can choose between an intuitive GUI or traditional CLI execution.
+✔ Mock Mode – Safe testing mode for changes before applying them.
+✔ Modular System Support – Dynamically loads system scripts for each action.
+✔ Standardized Logging – Maintains logs in Logs/SOC_Access_Log.txt.
+
+🔹 Key Project Updates
+
+✅ Refactored & Organized Directory Structure:
+
+CheckAccess/ → Contains system-specific check scripts.
+GrantAccess/ → Houses grant scripts for each system.
+RemoveAccess/ → Stores removal scripts for each system.
+Utils/ → Includes RT API and shared utilities.
+Logs/ → Stores all access management logs.
+
+✅ Refactored checkaccess.py, grantaccess.py, and separation.py:
+
+Now all scripts support both GUI & CLI operation for consistency.
+Standardized logging & RT ticket updates across all actions.
+Scripts dynamically load system-specific scripts (e.g., check_aws.py, grant_jira.py, etc.).
+
+✅ Updated soctool.py:
+
+GUI now supports launching all actions in a consistent format.
+Uses a single access window function for both granting and removing access.
+Prevents UI freezing by running scripts in separate threads.
+
+✅ Next Steps:
+
+Implement & test system scripts (check_xxx.py, grant_xxx.py, remove_xxx.py).
+Ensure scripts correctly interact with APIs & permissions systems.
+Conduct final testing & user validation.
+
+📌 TL;DR: The SOC Access Management Tool is now fully structured, refactored, and supports GUI & CLI for checking, granting, and removing access across multiple systems. The next step is developing the system-specific scripts to ensure full functionality. 🚀

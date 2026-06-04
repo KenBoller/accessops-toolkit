@@ -1,0 +1,22 @@
+{
+    "operators": [
+      {
+        "username": "admin",
+        "password": "password123",
+        "active": true,
+        "roles": ["admin", "access_manager", "incident_manager"]
+      },
+      {
+        "username": "kboller",
+        "password": "password123",
+        "active": true,
+        "roles": ["access_manager", "incident_manager"]
+      },
+      {
+        "username": "disabled_user",
+        "password": "password123",
+        "active": false,
+        "roles": ["viewer"]
+      }
+    ]
+  }

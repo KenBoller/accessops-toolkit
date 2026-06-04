@@ -1,0 +1,57 @@
+{
+  "incidents": [
+    {
+      "id": 5001,
+      "status": "triggered",
+      "severity": "critical",
+      "title": "CPU usage critical on app-server-01",
+      "system": "monitoring",
+      "source_alert_id": "alert-001",
+      "ticket_id": 1004,
+      "created_at": "2026-05-28T17:35:30",
+      "updated_at": "2026-05-28T17:35:30",
+      "timeline": [
+        {
+          "timestamp": "2026-05-28T17:35:30",
+          "type": "automation",
+          "message": "Incident escalation created from high-severity alert."
+        }
+      ]
+    },
+    {
+      "id": 5002,
+      "status": "triggered",
+      "severity": "major",
+      "title": "API gateway major error rate",
+      "system": "api-gateway",
+      "source_alert_id": "alert-003",
+      "ticket_id": 1005,
+      "created_at": "2026-05-28T17:35:30",
+      "updated_at": "2026-05-28T17:35:30",
+      "timeline": [
+        {
+          "timestamp": "2026-05-28T17:35:30",
+          "type": "automation",
+          "message": "Incident escalation created from high-severity alert."
+        }
+      ]
+    },
+    {
+      "id": 5003,
+      "status": "triggered",
+      "severity": "critical",
+      "title": "Major API outage affecting production",
+      "system": "accessops",
+      "ticket_id": 1007,
+      "created_at": "2026-05-28T18:03:28",
+      "updated_at": "2026-05-28T18:03:28",
+      "timeline": [
+        {
+          "timestamp": "2026-05-28T18:03:28",
+          "type": "outage",
+          "message": "Major incident created from outage manager workflow."
+        }
+      ]
+    }
+  ]
+}

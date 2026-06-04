@@ -1,0 +1,45 @@
+accessops-toolkit/
+│
+├── access_management.py
+├── soctool.py
+│
+├── systems/
+│   ├── base_system.py
+│   └── UIs/
+│       ├── adtrack.py
+│       ├── jira.py
+│       └── _template_system.py
+│
+├── tools/
+│   ├── alert_handler.py
+│   ├── alert_ticket_closer.py
+│   ├── auth_validator.py
+│   ├── new_hire_onboarding.py
+│   └── outage_manager.py
+│
+├── utils/
+│   ├── access_state.py
+│   ├── get_secret.py
+│   ├── id_generator.py
+│   └── ticket_api.py
+│
+├── data/
+│   ├── access_state.json
+│   ├── alerts.json
+│   ├── bridges.json
+│   ├── incidents.json
+│   ├── new_hires.json
+│   ├── notifications.json
+│   ├── operators.json
+│   └── tickets.json
+│
+├── docs/
+│   └── architecture.md
+│
+├── logs/
+├── tests/
+├── config/
+│   ├── creds.example.json
+│   └── creds.json
+│
+└── README.md

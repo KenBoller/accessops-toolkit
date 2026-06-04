@@ -1,0 +1,329 @@
+{
+  "adtrack": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:00",
+      "updated_at": "2026-06-04T11:59:00"
+    }
+  },
+  "afr": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:00",
+      "updated_at": "2026-06-04T11:59:00",
+      "groups": [
+        "afr-user"
+      ],
+      "system_type": "mock_oracle_app"
+    }
+  },
+  "auth0": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:00",
+      "updated_at": "2026-06-04T11:59:00",
+      "groups": [
+        "auth-user"
+      ],
+      "system_type": "identity_provider",
+      "tenant": "demo"
+    }
+  },
+  "avenger": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:00",
+      "updated_at": "2026-06-04T11:59:00",
+      "groups": [
+        "avenger-user"
+      ],
+      "system_type": "mock_mysql_app"
+    },
+    "mockuser1": {
+      "enabled": false,
+      "granted_at": "2026-06-04T11:58:59",
+      "updated_at": "2026-06-04T11:59:09",
+      "groups": [
+        "avenger-user"
+      ],
+      "system_type": "mock_mysql_app",
+      "removed_at": "2026-06-04T11:59:09"
+    }
+  },
+  "aws_iam": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:00",
+      "updated_at": "2026-06-04T11:59:00",
+      "groups": [
+        "iam-user"
+      ],
+      "system_type": "cloud_identity",
+      "provider": "aws"
+    }
+  },
+  "azure_portal": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:00",
+      "updated_at": "2026-06-04T11:59:00",
+      "groups": [
+        "azure-portal-user"
+      ],
+      "system_type": "cloud_identity",
+      "provider": "azure"
+    }
+  },
+  "call_scoring": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:01",
+      "updated_at": "2026-06-04T11:59:01",
+      "groups": [
+        "call-scoring-user"
+      ],
+      "system_type": "mock_api_app"
+    }
+  },
+  "chef": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:01",
+      "updated_at": "2026-06-04T11:59:01",
+      "groups": [
+        "chef-user"
+      ],
+      "system_type": "configuration_management",
+      "permissions": [
+        "read",
+        "execute"
+      ]
+    }
+  },
+  "chefdatabag": {},
+  "engage": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:01",
+      "updated_at": "2026-06-04T11:59:01",
+      "groups": [
+        "engage-user"
+      ],
+      "system_type": "mock_api_app",
+      "role": "staff"
+    }
+  },
+  "github": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:01",
+      "updated_at": "2026-06-04T11:59:01",
+      "groups": [
+        "github-member"
+      ],
+      "system_type": "source_control",
+      "provider": "github",
+      "role": "member"
+    }
+  },
+  "grafana": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:01",
+      "updated_at": "2026-06-04T11:59:01",
+      "groups": [
+        "grafana-viewer"
+      ],
+      "system_type": "observability",
+      "role": "viewer"
+    }
+  },
+  "ipplan": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:02",
+      "updated_at": "2026-06-04T11:59:02",
+      "groups": [
+        "ipplan-user"
+      ],
+      "system_type": "network_management"
+    }
+  },
+  "jira": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:02",
+      "updated_at": "2026-06-04T11:59:02",
+      "groups": [
+        "standard-user"
+      ]
+    }
+  },
+  "marketing_edge": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:02",
+      "updated_at": "2026-06-04T11:59:02",
+      "groups": [
+        "marketing-edge-user"
+      ],
+      "system_type": "mock_api_app",
+      "role": "administrator"
+    }
+  },
+  "mi5": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:02",
+      "updated_at": "2026-06-04T11:59:02",
+      "groups": [
+        "mi5-user"
+      ],
+      "system_type": "mock_web_app"
+    }
+  },
+  "microsites": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:02",
+      "updated_at": "2026-06-04T11:59:02",
+      "groups": [
+        "microsites-user"
+      ],
+      "system_type": "mock_mysql_app"
+    }
+  },
+  "mysql_db": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:02",
+      "updated_at": "2026-06-04T11:59:02",
+      "groups": [
+        "mysql-readonly-user"
+      ],
+      "system_type": "database",
+      "database_engine": "mysql",
+      "access_level": "readonly"
+    }
+  },
+  "nexus": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:03",
+      "updated_at": "2026-06-04T11:59:03",
+      "groups": [
+        "nexus-dev"
+      ],
+      "system_type": "artifact_repository",
+      "role": "developer"
+    }
+  },
+  "nimui": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:03",
+      "updated_at": "2026-06-04T11:59:03",
+      "groups": [
+        "nimui-user"
+      ],
+      "system_type": "mock_oracle_app"
+    }
+  },
+  "oracle_db": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:03",
+      "updated_at": "2026-06-04T11:59:03",
+      "groups": [
+        "oracle-readonly-user"
+      ],
+      "system_type": "database",
+      "database_engine": "oracle",
+      "access_level": "readonly"
+    }
+  },
+  "pagerduty": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:03",
+      "updated_at": "2026-06-04T11:59:03",
+      "groups": [
+        "pagerduty-observer"
+      ],
+      "system_type": "incident_management",
+      "role": "observer"
+    }
+  },
+  "postgres_db": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:03",
+      "updated_at": "2026-06-04T11:59:03",
+      "groups": [
+        "postgres-readonly-user"
+      ],
+      "system_type": "database",
+      "database_engine": "postgresql",
+      "access_level": "readonly"
+    }
+  },
+  "pulley": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:04",
+      "updated_at": "2026-06-04T11:59:04",
+      "groups": [
+        "pulley-user"
+      ],
+      "system_type": "mock_api_app",
+      "role": "standard"
+    }
+  },
+  "sentry": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:04",
+      "updated_at": "2026-06-04T11:59:04",
+      "groups": [
+        "sentry-member"
+      ],
+      "system_type": "error_monitoring",
+      "role": "member"
+    }
+  },
+  "slack": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:04",
+      "updated_at": "2026-06-04T11:59:04",
+      "groups": [
+        "slack-member"
+      ],
+      "system_type": "team_communication",
+      "role": "member"
+    }
+  },
+  "snowflake": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:04",
+      "updated_at": "2026-06-04T11:59:04",
+      "groups": [
+        "snowflake-readonly-user"
+      ],
+      "system_type": "data_warehouse",
+      "database_engine": "snowflake",
+      "access_level": "readonly"
+    }
+  },
+  "ticketing": {
+    "janesmith": {
+      "enabled": true,
+      "granted_at": "2026-06-04T11:59:04",
+      "updated_at": "2026-06-04T11:59:04",
+      "groups": [
+        "ticket-user"
+      ]
+    }
+  }
+}

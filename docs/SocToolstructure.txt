@@ -1,0 +1,21 @@
+SocTool/
+├── access_management.py      # CLI entry point for checking, granting, removing access
+├── soctool.py                # GUI wrapper that calls the CLI interactively
+├── Systems/
+│   ├── UIs/                  # System integration scripts (API-based or UI tools)
+│   │   ├── aws.py
+│   │   ├── jira.py
+│   │   ├── grafana.py
+│   │   ├── adtrack.py
+│   │   ├── ...
+│   └── DBs/                  # DB-integrated systems (Oracle, Snowflake, etc.)
+│       ├── nimui.py
+│       ├── snowflake.py
+│       └── ...
+├── Utils/
+│   └── rt_api.py             # RT ticket comment / integration helper
+├── Secrets/
+│   └── secret.py             # Local key/credential resolution (used by each script)
+├── Logs/
+│   └── access_management.log # Auto-generated log of actions and outputs
+└── README.md                 # (Planned) Project overview and onboarding guide

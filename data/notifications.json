@@ -1,0 +1,11 @@
+{
+  "notifications": [
+    {
+      "id": 9001,
+      "channel": "ops-alerts",
+      "severity": "critical",
+      "message": "Outage declared: Major API outage affecting production | Ticket #1007 | Incident #5003 | Bridge: https://bridge.example.com/7001",
+      "created_at": "2026-05-28T18:03:28"
+    }
+  ]
+}

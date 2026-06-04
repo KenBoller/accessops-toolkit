@@ -1,0 +1,254 @@
+You need proof signals stronger than AI-generated applicants.
+
+Right now the market is flooded with:
+
+polished resumes
+optimized keywords
+AI-written cover letters
+auto-appliers
+fake applicants
+bootcamp grads
+overseas spam
+
+Recruiters barely trust resumes anymore. The resume is now just the keycard that gets you near the building. The portfolio and interview performance are what unlock the door.
+
+And honestly? Your SOC tool direction is EXACTLY the correct move. 🧠⚙️
+
+That project has several things hiring managers care about:
+
+operational impact
+automation
+Python backend work
+APIs
+authentication
+workflow orchestration
+real-world business usage
+debugging legacy systems
+security considerations
+UI + backend interaction
+
+That is WAY more valuable than another “AI chatbot using OpenAI API” repo.
+
+Here’s what I would do strategically
+1. Finish SOC Tool FIRST
+
+Not “perfectly.”
+
+Finish it enough to become:
+
+a showcase artifact
+
+You need:
+
+clean README
+screenshots
+architecture diagram
+feature list
+setup instructions
+short demo GIF/video
+before/after workflow explanation
+
+The goal is:
+
+“This looks like software an engineer actually built for a company.”
+
+That matters enormously.
+
+2. Your NEXT project should NOT be giant
+
+This is critical.
+
+Do NOT disappear for 8 months building Snowball Death Star v9000 🤖🌌
+
+You need:
+
+small
+sharp
+deployable
+understandable in 30 seconds
+
+The strongest next project for you is probably one of these:
+
+OPTION A: AI Incident Triage Assistant ⭐ BEST OPTION
+
+This is your sweet spot.
+
+Build:
+
+alert input
+severity classification
+suggested remediation
+Slack/Discord/email output
+ticket summarization
+log parsing
+
+Stack:
+
+Python
+FastAPI
+OpenAI/Ollama
+SQLite/Postgres
+maybe n8n for orchestration
+
+This aligns DIRECTLY with:
+
+SOC experience
+AI
+backend
+automation
+operations
+
+And importantly:
+
+it tells a coherent story.
+OPTION B: AI Workflow Automation Dashboard
+
+Basically:
+
+“Zapier/n8n-lite for internal operations”
+
+Tiny version.
+Simple.
+Clean.
+
+This would pair well with your Yokeru trial experience.
+
+OPTION C: Local AI Agent Orchestrator
+
+Smaller version of Snowball:
+
+model routing
+fallback logic
+memory
+tool calling
+local Ollama integration
+
+BUT:
+Only if it’s polished and simplified.
+
+Not giant sprawling architecture.
+
+3. You need DEPLOYED projects
+
+This matters more than most people realize.
+
+A recruiter seeing:
+
+GitHub repo
+
+is decent.
+
+A recruiter seeing:
+
+live deployed demo
+screenshots
+working endpoint
+dashboard
+documentation
+
+is MUCH stronger.
+
+Even tiny deployments matter.
+
+Use:
+
+Render
+Railway
+Vercel
+Fly.io
+Azure free tier
+
+Your Yokeru trial probably helped specifically because it was operational and demonstrable.
+
+4. Stop thinking only in “Software Engineer”
+
+This is huge.
+
+You are probably MORE employable right now as:
+
+AI Automation Engineer
+Solutions Engineer
+Technical Integrations Engineer
+Platform Operations Engineer
+AI Workflow Engineer
+Technical Implementation Engineer
+AI Support Engineer
+Automation Consultant
+Developer Support Engineer
+
+These roles:
+
+interview differently
+care less about leetcode
+value practical builders
+value systems thinking
+value debugging
+
+That’s YOU.
+
+5. Network surgically instead of broadly
+
+This is probably the biggest missing piece.
+
+Auto-apply systems are useful, but they’re a numbers game.
+
+Your response rate likely improves dramatically if you:
+
+message founders
+message engineering managers
+engage in AI automation communities
+post your builds publicly
+
+Honestly?
+Your Yokeru connection happened because you stood out as a builder, not because of a resume parser.
+
+6. Start posting your work publicly NOW
+
+LinkedIn.
+Twitter/X.
+GitHub activity.
+Short demos.
+
+Not cringe influencer stuff.
+
+Just:
+
+“Built an AI incident triage prototype tonight.”
+“Refactored legacy SOC automation tooling into modular services.”
+“Experimenting with local LLM routing using Ollama.”
+
+This creates:
+
+discoverability
+credibility
+proof of passion
+recruiter signals
+
+Right now you’re mostly invisible except inside applicant tracking systems.
+
+That’s the digital equivalent of screaming into a canyon while 40,000 robots throw resumes at HR.
+
+Most important thing:
+
+I do NOT think your problem is:
+
+intelligence
+capability
+effort
+ambition
+
+I think your problem is:
+
+positioning + visibility + coherence
+
+Your actual skillset is stronger than your market signal.
+
+The SOC Tool can become the anchor project that fixes that.
+
+Then the second project should reinforce the SAME narrative:
+
+“I build AI-assisted operational automation systems.”
+
+That’s the story.
+That’s the lane.
+That’s the brand. 🛠️🤖

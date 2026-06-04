@@ -1,0 +1,175 @@
+{
+  "tickets": [
+    {
+      "id": 1001,
+      "title": "CPU usage alert on web-server-01",
+      "status": "open",
+      "queue": "alerts",
+      "severity": "high",
+      "created_at": "2026-05-28T10:00:00",
+      "updated_at": "2026-05-28T10:15:00",
+      "assigned_to": "socbot",
+      "system": "grafana",
+      "history": [
+        {
+          "timestamp": "2026-05-28T10:00:00",
+          "type": "alert",
+          "message": "CPU usage exceeded 95%."
+        },
+        {
+          "timestamp": "2026-05-28T10:10:00",
+          "type": "comment",
+          "message": "Investigating high CPU usage."
+        }
+      ]
+    },
+    {
+      "id": 1002,
+      "title": "Database connection timeout",
+      "status": "resolved",
+      "queue": "alerts",
+      "severity": "critical",
+      "created_at": "2026-05-28T09:30:00",
+      "updated_at": "2026-05-28T15:04:06",
+      "assigned_to": "socbot",
+      "system": "postgres",
+      "history": [
+        {
+          "timestamp": "2026-05-28T09:30:00",
+          "type": "alert",
+          "message": "Database response timeout detected."
+        },
+        {
+          "timestamp": "2026-05-28T10:40:00",
+          "type": "resolution",
+          "message": "Alert cleared automatically after service recovery."
+        },
+        {
+          "timestamp": "2026-05-28T15:04:06",
+          "type": "automation",
+          "message": "Ticket automatically resolved after clear condition was detected."
+        }
+      ]
+    },
+    {
+      "id": 1003,
+      "title": "Slack webhook delivery failure",
+      "status": "resolved",
+      "queue": "alerts",
+      "severity": "medium",
+      "created_at": "2026-05-27T18:00:00",
+      "updated_at": "2026-05-27T18:25:00",
+      "assigned_to": "automation",
+      "system": "slack",
+      "history": [
+        {
+          "timestamp": "2026-05-27T18:00:00",
+          "type": "alert",
+          "message": "Webhook delivery failures detected."
+        },
+        {
+          "timestamp": "2026-05-27T18:20:00",
+          "type": "resolution",
+          "message": "Webhook delivery restored."
+        },
+        {
+          "timestamp": "2026-05-27T18:25:00",
+          "type": "closure",
+          "message": "Ticket automatically resolved."
+        }
+      ]
+    },
+    {
+      "id": 1004,
+      "title": "CPU usage critical on app-server-01",
+      "status": "open",
+      "queue": "alerts",
+      "severity": "critical",
+      "created_at": "2026-05-28T17:35:30",
+      "updated_at": "2026-05-28T17:35:30",
+      "assigned_to": "automation",
+      "system": "monitoring",
+      "source_alert_id": "alert-001",
+      "history": [
+        {
+          "timestamp": "2026-05-28T17:35:30",
+          "type": "alert",
+          "message": "CPU usage exceeded 95% for 10 minutes."
+        },
+        {
+          "timestamp": "2026-05-28T17:35:30",
+          "type": "automation",
+          "message": "Ticket created automatically from high-severity alert."
+        }
+      ]
+    },
+    {
+      "id": 1005,
+      "title": "API gateway major error rate",
+      "status": "open",
+      "queue": "alerts",
+      "severity": "major",
+      "created_at": "2026-05-28T17:35:30",
+      "updated_at": "2026-05-28T17:35:30",
+      "assigned_to": "automation",
+      "system": "api-gateway",
+      "source_alert_id": "alert-003",
+      "history": [
+        {
+          "timestamp": "2026-05-28T17:35:30",
+          "type": "alert",
+          "message": "5xx error rate exceeded threshold."
+        },
+        {
+          "timestamp": "2026-05-28T17:35:30",
+          "type": "automation",
+          "message": "Ticket created automatically from high-severity alert."
+        }
+      ]
+    },
+    {
+      "id": 1006,
+      "title": "New hire onboarding: Jane Smith (janesmith)",
+      "status": "open",
+      "queue": "onboarding",
+      "severity": "normal",
+      "ticket_type": "onboarding",
+      "created_at": "2026-05-28T17:48:47",
+      "updated_at": "2026-05-28T17:48:47",
+      "assigned_to": "automation",
+      "system": "accessops",
+      "source_employee_id": "emp-001",
+      "history": [
+        {
+          "timestamp": "2026-05-28T17:48:47",
+          "type": "automation",
+          "message": "Onboarding ticket created automatically from new hire record."
+        },
+        {
+          "timestamp": "2026-05-28T17:48:47",
+          "type": "details",
+          "message": "Name: Jane Smith\nUsername: janesmith\nDepartment: Operations\nTitle: SOC Analyst\nManager: Alex Manager\nRequested systems: jira, adtrack"
+        }
+      ]
+    },
+    {
+      "id": 1007,
+      "title": "Outage: Major API outage affecting production",
+      "status": "open",
+      "queue": "incidents",
+      "severity": "critical",
+      "ticket_type": "outage",
+      "created_at": "2026-05-28T18:03:28",
+      "updated_at": "2026-05-28T18:03:28",
+      "assigned_to": "incident_commander",
+      "system": "accessops",
+      "history": [
+        {
+          "timestamp": "2026-05-28T18:03:28",
+          "type": "outage",
+          "message": "Major outage workflow started: Major API outage affecting production"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "JIRA_API_KEY": "replace_me",
+  "GRAFANA_API_KEY": "replace_me",
+  "ORACLE_USER": "replace_me",
+  "ORACLE_PASS": "replace_me",
+  "LDAP_HOST": "ldap.example.com",
+  "LDAP_BASE_DN": "dc=example,dc=com",
+  "POSTGRES_HOST": "localhost",
+  "POSTGRES_PORT": 5432
+}

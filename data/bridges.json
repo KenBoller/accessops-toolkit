@@ -1,0 +1,12 @@
+{
+  "bridges": [
+    {
+      "id": 7001,
+      "incident_id": 5003,
+      "status": "open",
+      "bridge_url": "https://bridge.example.com/7001",
+      "created_at": "2026-05-28T18:03:28",
+      "updated_at": "2026-05-28T18:03:28"
+    }
+  ]
+}

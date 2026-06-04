@@ -1,0 +1,14 @@
+I’d Also Strongly Recommend
+
+Before next session:
+
+Create:
+docs/
+
+and start:
+
+architecture.md
+workflow_examples.md
+future_roadmap.md
+
+because this project is now mature enough that documentation adds huge value.

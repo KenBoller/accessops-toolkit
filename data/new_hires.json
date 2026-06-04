@@ -1,0 +1,22 @@
+{
+    "new_hires": [
+      {
+        "employee_id": "emp-001",
+        "name": "Jane Smith",
+        "username": "janesmith",
+        "department": "Operations",
+        "title": "SOC Analyst",
+        "manager": "Alex Manager",
+        "requested_systems": ["jira", "adtrack"]
+      },
+      {
+        "employee_id": "emp-002",
+        "name": "Marcus Lee",
+        "username": "mlee",
+        "department": "Engineering",
+        "title": "Backend Engineer",
+        "manager": "Taylor Manager",
+        "requested_systems": ["jira"]
+      }
+    ]
+  }

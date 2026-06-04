@@ -1,0 +1,10 @@
+SocTool/
+├── soctool.py
+├── access_management.py
+├── secret.py
+├── Utils/
+│   └── rt_api.py
+├── Logs/
+├── Systems/
+│   ├── UIs/
+│   │   └── (any mock or real check_x.py, grant_x.py, etc.)

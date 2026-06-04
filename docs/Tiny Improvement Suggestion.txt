@@ -1,0 +1,27 @@
+Tiny Improvement Suggestion
+
+Eventually you may want:
+
+.env support
+
+using:
+
+python-dotenv
+
+because many employers expect that pattern.
+
+Example future enhancement:
+
+from dotenv import load_dotenv
+load_dotenv()
+
+Then secrets can come from:
+
+environment variables
+.env
+fallback JSON
+
+But honestly?
+Not urgent right now.
+
+Current setup is already perfectly acceptable for a portfolio project.

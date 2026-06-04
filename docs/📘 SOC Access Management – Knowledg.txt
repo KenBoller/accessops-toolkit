@@ -1,0 +1,116 @@
+📘 SOC Access Management – Knowledge Transfer (KT) Document
+
+Author: Ken Boller
+Last Updated: [Insert Date]
+Purpose: This document provides an overview of the SOC Access Management tooling (scripts + GUI), the file structure, where it lives, and how it’s used. Intended for continuity while the primary developer is on leave.
+
+🔧 Project Overview
+
+The SOC Access Management project provides a streamlined way for the Security Operations Center (SOC) team to manage access across internal tools and platforms using a combination of:
+
+A CLI tool (access_management.py)
+A GUI wrapper (soctool.py)
+Modular system-specific scripts (check/grant/remove)
+Credential-secured operations (pending integration via Cloud Workstation VM)
+📁 Repository Location
+
+Location:
+/site/socbot/scripts/ (Cloud Workstation VM)
+
+Primary Folders:
+
+SocTool/ → main folder for all GUI and CLI tools
+access_management.py → CLI tool (entry point)
+soctool.py → GUI wrapper (calls access_management.py)
+Systems/UIs/ → location for individual system integration scripts (e.g., aws.py, jira.py, etc.)
+Logs/ → auto-created if not present
+Utils/ → shared functions (e.g., rt_api.py)
+Secrets/ → will hold local credential files for authentication (set via environment variables or local config)
+🔑 Authentication & Credentials (Current Status)
+
+Cloud Workstation VM will act as the credential store.
+
+Each system script (AWS, Jira, Grafana, etc.) will reference locally-stored secrets on the Cloud Workstation VM. These may include:
+
+API keys
+Service credentials
+LDAP bind credentials
+DB user/passwords for Oracle/Snowflake/etc.
+
+⚠️ Next Step: Still awaiting access to the Cloud Workstation to complete setup and begin full integration/testing.
+
+🧩 Script Behavior
+access_management.py (CLI Tool)
+Allows interactive or argument-based control of user access
+Handles checking, granting, and removing access
+Can be run manually or by GUI tool
+Uses subprocess to call individual system scripts located in Systems/UIs/
+soctool.py (GUI Tool)
+Tkinter-based GUI that wraps the CLI for easier usage
+Allows for user-friendly selection of check/remove/grant actions
+Passes mock flag and target usernames to CLI
+Individual System Scripts (e.g., aws.py, jira.py, etc.)
+Each script supports: main(user, creds) and foundAccess(result) interfaces
+Can be imported or executed via subprocess
+
+Follows standard creds dict pattern:
+
+creds = {
+  "operatorUN": "user123",
+  "accessChoice": "check/remove/grant",
+  "MOCK_MODE": True/False
+}
+✅ Supported Systems
+
+Scripts for the following systems have been created or updated to support check, grant, and remove:
+
+✅ AWS
+✅ JIRA
+✅ Grafana
+✅ NimUI (Oracle)
+✅ PagerDuty
+✅ RT
+✅ ADTrack
+✅ Auth0
+✅ AFR
+✅ Azure Portal
+✅ Call Scoring
+✅ Chef
+✅ Chef DataBag
+✅ Engage / OneUI / Spotlight
+✅ GitHub
+✅ Marketing Edge
+✅ Nexus / Toolsnexus
+✅ Pulley
+✅ Sentry
+✅ Snowflake
+🧪 Testing Status
+Component	Status	Notes
+Script conversion	✅ Complete	All legacy scripts ported to Python 3
+GUI implementation	✅ Complete	soctool.py tested locally
+Mock mode testing	✅ Complete	Fully supported in all scripts
+Credential testing	🚧 Pending	Requires Cloud Workstation access
+Final integration	🚧 Pending	Blocked by credential access
+🗂 File Example Structure
+SocTool/
+├── access_management.py     # CLI driver
+├── soctool.py               # GUI wrapper
+├── Systems/
+│   └── UIs/
+│       ├── aws.py
+│       ├── jira.py
+│       ├── grafana.py
+│       └── ...
+├── Utils/
+│   └── rt_api.py
+├── Logs/
+│   └── access_management.log
+└── README.md (planned)
+🔒 Security Notes
+No secrets are stored in code. All sensitive values will be loaded via secure methods (once workstation config is complete).
+MOCK_MODE = True by default unless passed explicitly via CLI/GUI
+Production credentials are managed securely in Bitwarden or on the VM
+📎 Additional Notes
+All SOPs are strictly followed per system-specific logic
+Each script has docstrings and logging for traceability
+Post-leave support: I’ll still be available intermittently if anything comes up or needs quick fixes
