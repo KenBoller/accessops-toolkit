@@ -225,8 +225,37 @@ def check_access(target_user: str, system: str | None = None, rt_ticket: str | N
             summary_lines.append(f"[ERROR] {system_name}: {stderr}")
             logging.error("%s stderr: %s", system_name, stderr)
 
+    audit_table = Table(title=f"Access Audit Results - {target_user}")
+
+    audit_table.add_column("System", style="cyan")
+    audit_table.add_column("Status", style="green")
+
+    for line in summary_lines:
+
+        if line.startswith("[FOUND]"):
+            system_name = line.split()[1].replace(":", "")
+            audit_table.add_row(system_name, "[green]FOUND[/green]")
+
+        elif line.startswith("[NOT FOUND]"):
+            system_name = line.split()[2].replace(":", "")
+            audit_table.add_row(system_name, "[red]NO ACCESS[/red]")
+
+    console.print()
+    console.print(audit_table)
+
     summary = build_check_summary(target_user, timestamp, summary_lines)
 
+    console.print()
+
+    console.print(
+        Panel.fit(
+            f"Systems Checked: {len(summary_lines)}\n"
+            f"Access Found: {len(found_access)}\n"
+            f"Access Missing: {len(summary_lines) - len(found_access)}",
+            title="Audit Summary",
+            border_style="green",
+        )
+    )
     logging.info("\n%s", summary)
 
     if rt_ticket:
