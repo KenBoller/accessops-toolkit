@@ -12,6 +12,7 @@ import sys
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from database.db import get_connection
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
@@ -250,3 +251,20 @@ def remove_user_access(
         mock=mock,
         dry_run=dry_run,
     )
+
+
+@router.get("/tickets", tags=["Tickets"])
+def get_tickets():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, title, owner, status
+        FROM tickets
+    """)
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
