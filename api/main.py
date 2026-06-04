@@ -19,12 +19,11 @@ app = FastAPI(
 )
 
 
-@app.get("/health", tags=["Health"])
-def health_check() -> dict:
-    """Basic API health check."""
+@app.get("/health")
+def health():
     return {
-        "status": "ok",
-        "service": "accessops-toolkit-api",
+        "status": "healthy",
+        "version": "2.0.0"
     }
 
 
