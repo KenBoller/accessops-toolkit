@@ -14,7 +14,9 @@ import subprocess
 import sys
 from datetime import datetime
 from getpass import getpass
-
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -46,6 +48,7 @@ except ModuleNotFoundError:
     def add_comment(ticket_id: str, comment: str) -> None:
         logging.warning("RT/ticket helper not found. Skipping ticket comment for %s.", ticket_id)
 
+console = Console()
 
 def authenticate_operator(username: str | None, password: str | None, mock_mode: bool) -> bool:
     """Authenticate the operator before allowing access actions."""
@@ -94,17 +97,22 @@ def discover_system_scripts() -> dict[str, str]:
 
 
 def list_available_systems() -> None:
-    """Print discovered systems."""
+    """Print discovered systems in a formatted table."""
     system_scripts = discover_system_scripts()
 
     if not system_scripts:
-        print("No system scripts found.")
+        console.print("[yellow]No system scripts found.[/yellow]")
         return
 
-    print("\nAvailable systems:")
-    for system_name in sorted(system_scripts):
-        print(f"  - {system_name}")
+    table = Table(title="Available AccessOps Systems")
+    table.add_column("#", justify="right", style="cyan", no_wrap=True)
+    table.add_column("System", style="green")
 
+    for index, system_name in enumerate(sorted(system_scripts), start=1):
+        table.add_row(str(index), system_name)
+
+    console.print()
+    console.print(table)
 
 def run_system_script(
     script_path: str,
@@ -175,7 +183,14 @@ def check_access(target_user: str, system: str | None = None, rt_ticket: str | N
     """Check access for one system or all systems."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    print(f"\nChecking access for {target_user} at {timestamp}")
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]Checking access for:[/bold] [cyan]{target_user}[/cyan]\n"
+        f"[bold]Timestamp:[/bold] {timestamp}",
+        title="Access Audit",
+        border_style="blue",
+    ))
+
     logging.info("Checking access for user: %s", target_user)
 
     system_scripts = discover_system_scripts()
@@ -185,7 +200,7 @@ def check_access(target_user: str, system: str | None = None, rt_ticket: str | N
     summary_lines: list[str] = []
 
     for system_name, script_path in systems_to_check.items():
-        print(f"\n[{system_name}] Running access check...")
+        console.print(f"\n[bold blue][{system_name}][/bold blue] Running access check...")
 
         result = run_system_script(
             script_path=script_path,
@@ -239,10 +254,17 @@ def run_single_action(
         logging.error("System not found for %s action: %s", action, system)
         return
 
-    print(f"\nRunning {action} for {target_user} in {system_name}...")
+    console.print()
+    console.print(Panel.fit(
+        f"[bold]Action:[/bold] {action}\n"
+        f"[bold]User:[/bold] [cyan]{target_user}[/cyan]\n"
+        f"[bold]System:[/bold] [green]{system_name}[/green]",
+        title="Access Action",
+        border_style="green" if action == "grant" else "red",
+    ))
 
     if mock_mode:
-        print("Mock mode is ON. Updating local mock access_state.json only.")
+        console.print("[yellow]Mock mode is ON. Updating local mock access_state.json only.[/yellow]")
 
     result = run_system_script(
         script_path=system_scripts[system_name],
@@ -277,6 +299,7 @@ def grant_access(target_user: str, system: str, mock_mode: bool = False, dry_run
 
 def remove_access(target_user: str, system: str, mock_mode: bool = False, dry_run: bool = False, rt_ticket: str | None = None) -> None:
     run_single_action("remove", target_user, system, mock_mode, dry_run, rt_ticket)
+
 
 def interactive_mode(mock_mode: bool = False) -> None:
     """CLI-friendly guided workflow."""
