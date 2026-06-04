@@ -18,15 +18,6 @@ app = FastAPI(
     version="2.0.0",
 )
 
-
-@app.get("/health")
-def health():
-    return {
-        "status": "healthy",
-        "version": "2.0.0"
-    }
-
-
 app.include_router(access_router)
 
 @app.get("/health", tags=["Health"])
