@@ -36,3 +36,9 @@ coverage/
 OLD/
 
 docs/*.txt
+
+data/access_state.json
+logs/
+__pycache__/
+*.pyc
+docs/*.txt
