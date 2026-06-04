@@ -42,3 +42,5 @@ logs/
 __pycache__/
 *.pyc
 docs/*.txt
+
+data/accessops.db
