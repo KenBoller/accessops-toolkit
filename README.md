@@ -1,38 +1,43 @@
 # AccessOps Toolkit
 
+![Version](https://img.shields.io/badge/Version-1.0.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-REST_API-green)
 ![Status](https://img.shields.io/badge/Status-Portfolio_Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Interface](https://img.shields.io/badge/Interface-CLI_+_GUI-orange)
 
-AccessOps Toolkit is a Python-based Identity and Access Management (IAM) automation platform that simulates real-world onboarding, offboarding, access auditing, entitlement reviews, and access remediation workflows.
+A Python-based Identity and Access Management (IAM) automation platform that simulates real-world onboarding, offboarding, access auditing, entitlement reviews, and access remediation workflows.
 
-The project demonstrates how operational teams can manage user access across multiple systems through a centralized controller while maintaining auditability, consistency, and workflow validation.
+AccessOps Toolkit demonstrates how operational teams can centrally manage user access across multiple systems while maintaining auditability, workflow validation, and operational consistency.
 
 Originally inspired by internal operational tooling concepts, this version has been rebuilt as a portfolio-safe standalone application suitable for public GitHub hosting and technical review.
 
 ---
 
-# Highlights
+# Features
 
 ✅ FastAPI REST API
 
 ✅ Swagger / OpenAPI Documentation
 
-✅ Rich Terminal Interface
+✅ Rich CLI Interface
 
 ✅ Tkinter GUI
 
-✅ Modular System Connectors
+✅ Dynamic System Discovery
 
-✅ Access Audit Workflows
+✅ Access Auditing
 
-✅ Provisioning & Deprovisioning
+✅ Access Provisioning
+
+✅ Access Removal
 
 ✅ Ticket Ownership Validation
 
-✅ Workflow Documentation
+✅ Platform Metrics Endpoint
+
+✅ Modular System Connectors
 
 ✅ Architecture Documentation
 
@@ -40,53 +45,44 @@ Originally inspired by internal operational tooling concepts, this version has b
 
 # Technologies Used
 
-- Python 3
+### Languages & Frameworks
+
+- Python 3.11
 - FastAPI
-- Swagger / OpenAPI
 - Tkinter
-- Rich
-- JSON
-- argparse
-- pathlib
-- Logging
+
+### Development Tools
+
 - Git
 - GitHub
+- Swagger / OpenAPI
+- argparse
+- pathlib
+- logging
+- JSON
 
-Concepts Demonstrated:
+### Concepts Demonstrated
 
 - Identity & Access Management (IAM)
-- Workflow Automation
-- Operational Tooling
+- Operational Automation
 - API Development
+- Workflow Automation
 - Modular Architecture
 - Audit Logging
-- Access Provisioning
 - Access Reviews
+- Access Provisioning
 - Entitlement Management
+- Platform Metrics
 
 ---
 
 # REST API
 
-Start the API:
+Start the API locally:
 
 ```bash
 uvicorn api.main:app --reload
 ```
-
-### Swagger Documentation
-
-![Swagger](docs/screenshots/swagger-ui3.png)
-![Swagger](docs/screenshots/swagger-ui4.png)
-
-
-### Systems Endpoint
-
-![Systems](docs/screenshots/swagger-systems.png)
-
-### Stats Endpoint
-
-![Stats](docs/screenshots/swagger-stats.png)
 
 Swagger UI:
 
@@ -94,35 +90,115 @@ Swagger UI:
 http://127.0.0.1:8000/docs
 ```
 
-Available endpoints:
+---
+
+## API Endpoints
+
+### System Discovery
 
 ```http
-GET    /api/systems
-GET    /api/users/{username}/access
+GET /api/systems
+```
 
-POST   /api/users/{username}/grant/{system}
-POST   /api/users/{username}/remove/{system}
+Returns all available access-managed systems.
+
+---
+
+### Platform Statistics
+
+```http
+GET /api/stats
+```
+
+Returns high-level platform metrics.
+
+Example:
+
+```json
+{
+  "systems_available": 28,
+  "users_tracked": 3,
+  "tickets_open": 5,
+  "incidents_open": 3,
+  "access_requests_pending": 0
+}
 ```
 
 ---
 
-# API Documentation
+### User Access Audit
 
-## Swagger UI
+```http
+GET /api/users/{username}/access
+```
 
-![Swagger](docs/screenshots/swagger-ui.png)
+Optional query parameter:
 
-### System Discovery Endpoint
+```http
+?system=jira
+```
 
-![Swagger](docs/screenshots/swagger-ui1.png)
-
-### User Access Audit Endpoint
-
-![Swagger](docs/screenshots/swagger-ui2.png)
+Returns discovered access for a user.
 
 ---
 
-# CLI Examples
+### Grant Access
+
+```http
+POST /api/users/{username}/grant/{system}
+```
+
+Example:
+
+```http
+POST /api/users/janesmith/grant/jira
+```
+
+---
+
+### Remove Access
+
+```http
+POST /api/users/{username}/remove/{system}
+```
+
+Example:
+
+```http
+POST /api/users/janesmith/remove/ticketing
+```
+
+---
+
+# Swagger Documentation
+
+## API Overview
+
+![Swagger UI](docs/screenshots/swagger-ui3.png)
+
+![Swagger UI](docs/screenshots/swagger-ui4.png)
+
+---
+
+## Systems Endpoint
+
+![Systems Endpoint](docs/screenshots/swagger-systems.png)
+
+---
+
+## Platform Statistics Endpoint
+
+![Stats Endpoint](docs/screenshots/swagger-stats.png)
+
+---
+
+## User Access Audit Endpoint
+
+![User Access Endpoint](docs/screenshots/swagger-ui2.png)
+
+---
+
+# CLI Usage
 
 ## List Available Systems
 
@@ -130,17 +206,23 @@ POST   /api/users/{username}/remove/{system}
 python access_management.py --list-systems
 ```
 
+---
+
 ## Audit User Access
 
 ```bash
 python access_management.py check kboller
 ```
 
+---
+
 ## Grant Access
 
 ```bash
 python access_management.py grant janesmith --system jira --mock
 ```
+
+---
 
 ## Remove Access
 
@@ -150,19 +232,25 @@ python access_management.py remove janesmith --system ticketing --dry-run
 
 ---
 
-# Screenshots
+# CLI Screenshots
 
-## Available Systems
+## Dynamic System Discovery
 
 ![System Discovery](docs/screenshots/python%20access_management.py%20--list-systems.png)
+
+---
 
 ## Access Audit
 
 ![Access Check](docs/screenshots/python%20access_management.py%20check%20kboller.png)
 
+---
+
 ## Grant Access
 
 ![Grant Access](docs/screenshots/python%20access_management.py%20grant%20janesmith%20--system%20jira%20--mock.png)
+
+---
 
 ## Dry Run Removal
 
@@ -174,7 +262,7 @@ python access_management.py remove janesmith --system ticketing --dry-run
 
 ![Architecture](docs/architecture.png)
 
-### High-Level Flow
+## High-Level Flow
 
 ```text
 Operator
@@ -184,15 +272,17 @@ Access Management Controller
     │
     ├── Authentication
     ├── System Discovery
-    ├── Access Workflows
-    ├── Audit Logging
-    └── Ticket Validation
+    ├── Access Auditing
+    ├── Provisioning
+    ├── Deprovisioning
+    ├── Ticket Validation
+    └── Audit Logging
             │
             ▼
-      System Modules
+      System Connectors
             │
             ▼
-        Data Layer
+          Data Layer
 ```
 
 Additional documentation:
@@ -214,23 +304,16 @@ accessops-toolkit/
 ├── api/
 │   ├── main.py
 │   └── routes/
+│       └── access.py
 │
 ├── config/
-│
 ├── data/
-│
 ├── docs/
-│
 ├── logs/
-│
 ├── reports/
-│
 ├── systems/
-│
-├── tools/
-│
 ├── tests/
-│
+├── tools/
 └── utils/
 ```
 
@@ -244,13 +327,14 @@ accessops-toolkit/
 python access_management.py check kboller
 ```
 
-1. Authenticate operator
-2. Discover systems
-3. Execute checks
-4. Aggregate results
-5. Generate audit output
+Workflow:
 
-### API Equivalent
+1. Discover available systems
+2. Execute access checks
+3. Aggregate results
+4. Generate audit output
+
+API Equivalent:
 
 ```http
 GET /api/users/kboller/access
@@ -264,12 +348,14 @@ GET /api/users/kboller/access
 python access_management.py grant janesmith --system jira --mock
 ```
 
+Workflow:
+
 1. Validate target system
 2. Execute provisioning workflow
 3. Record audit event
 4. Return confirmation
 
-### API Equivalent
+API Equivalent:
 
 ```http
 POST /api/users/janesmith/grant/jira
@@ -283,13 +369,15 @@ POST /api/users/janesmith/grant/jira
 python access_management.py remove janesmith --system ticketing --dry-run
 ```
 
+Workflow:
+
 1. Verify ownership
 2. Review tickets
 3. Reassign operational assets
 4. Remove access
 5. Record audit history
 
-### API Equivalent
+API Equivalent:
 
 ```http
 POST /api/users/janesmith/remove/ticketing
@@ -342,12 +430,13 @@ All integrations are mocked, generalized, or sanitized for portfolio use.
 - Role templates
 - User lifecycle management
 - Enhanced reporting
+- SQLite persistence layer
 
 ## Version 3.x
 
-- Expanded FastAPI functionality
 - Authentication layer
-- REST-based connectors
+- Expanded REST API
+- Connector abstraction improvements
 - Approval workflows
 
 ## Future
@@ -356,12 +445,13 @@ All integrations are mocked, generalized, or sanitized for portfolio use.
 - CI/CD pipeline
 - Automated testing
 - Web dashboard
+- Cloud deployment
 
 ---
 
 # Why This Project Exists
 
-AccessOps Toolkit demonstrates the design of operational automation platforms commonly used by:
+AccessOps Toolkit demonstrates the type of automation platforms commonly used by:
 
 - Security Operations (SOC)
 - IT Operations
@@ -369,7 +459,7 @@ AccessOps Toolkit demonstrates the design of operational automation platforms co
 - Platform Engineering
 - DevOps Organizations
 
-The project showcases practical automation patterns for:
+Typical use cases include:
 
 - Employee onboarding
 - Employee offboarding
@@ -378,4 +468,4 @@ The project showcases practical automation patterns for:
 - Audit preparation
 - Access remediation
 
-while remaining completely safe for public portfolio use.
+while remaining fully safe for public GitHub hosting, technical interviews, and portfolio review.
