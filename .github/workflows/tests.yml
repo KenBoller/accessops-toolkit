@@ -1,0 +1,71 @@
+After Deployment
+
+The next enhancements I'd target are:
+
+1. Docker
+
+Add:
+
+Dockerfile
+
+and
+
+docker-compose.yml
+
+Very recruiter-friendly.
+
+2. GitHub Actions
+
+Automatically run:
+
+pytest
+
+on every push.
+
+This is another major "real software engineering" signal.
+
+3. SQLite Backend
+
+Replace some JSON files with:
+
+SQLite
+
+for:
+
+users
+tickets
+incidents
+requests
+
+That pushes the project toward:
+
+Backend Engineer
+Platform Engineer
+IAM Engineer
+
+rather than just Python scripting.
+
+
+
+
+After deployment
+
+The next upgrade I'd tackle is not another feature.
+
+I'd make the project look more "production":
+
+v1.1.0
+
+Add:
+
+.github/workflows/
+
+with GitHub Actions:
+
+Run pytest on every push
+
+Then your GitHub page gets a green badge:
+
+Build Passing
+
+Recruiters absolutely notice that.
