@@ -470,3 +470,12 @@ Typical use cases include:
 - Access remediation
 
 while remaining fully safe for public GitHub hosting, technical interviews, and portfolio review.
+
+# Author
+
+**Kenneth Lloyd Boller**
+
+Python Backend Developer | AI Automation | FastAPI | RAG Systems | SOC Automation
+
+GitHub:
+https://github.com/Fll0yd
