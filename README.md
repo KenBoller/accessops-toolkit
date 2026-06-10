@@ -442,11 +442,11 @@ All integrations are mocked, generalized, or sanitized for portfolio use.
 
 ## Future
 
-- Docker deployment
-- CI/CD pipeline
-- Automated testing
-- Web dashboard
-- Cloud deployment
+- JWT Authentication
+- Role Based Access Control
+- PostgreSQL Support
+- Audit History Dashboard
+- Approval Workflows
 
 ---
 
