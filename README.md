@@ -16,6 +16,20 @@ Originally inspired by internal operational tooling concepts, this version has b
 
 ---
 
+## Project Background
+
+AccessOps Toolkit is an independent, portfolio-safe implementation inspired by my experience developing internal automation tools while working on the Service Operations Center (SOC) team at Marchex.
+
+At Marchex, I modernized legacy Python 2 employee-separation scripts into a Python 3 access-management application. I expanded the functionality to support employee access reviews, onboarding, offboarding, and operational documentation, with a Tkinter interface for the SOC team.
+
+The application was adopted by the SOC team and helped bring employee access-management tasks that previously required an overnight handoff into the team's regular workflow.
+
+This public repository demonstrates related engineering concepts through a separate implementation using Python, FastAPI, command-line tooling, and simulated integrations.
+
+**The public project does not contain Marchex source code, credentials, customer information, or internal infrastructure details.**
+
+---
+
 # Features
 
 ✅ FastAPI REST API
