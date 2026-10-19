@@ -9,6 +9,17 @@ Run with:
 
 from fastapi import FastAPI
 
+from contextlib import asynccontextmanager
+
+from database.db import engine
+from database.models import Base
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    yield
+
 from api.routes.access import router as access_router
 
 
@@ -16,6 +27,7 @@ app = FastAPI(
     title="AccessOps Toolkit API",
     description="REST API for access auditing, provisioning, and removal workflows.",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.include_router(access_router)
