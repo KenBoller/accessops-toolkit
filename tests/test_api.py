@@ -3,10 +3,16 @@ from fastapi.testclient import TestClient
 from api.main import app
 
 
-client = TestClient(app)
+import pytest
 
 
-def test_health_check():
+@pytest.fixture
+def client():
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_health_check(client):
     response = client.get("/health")
 
     assert response.status_code == 200
@@ -14,7 +20,7 @@ def test_health_check():
     assert response.json()["version"] == "2.0.0"
 
 
-def test_system_discovery():
+def test_system_discovery(client):
     response = client.get("/api/systems")
 
     assert response.status_code == 200
@@ -26,7 +32,7 @@ def test_system_discovery():
     assert "jira" in data["systems"]
 
 
-def test_stats_endpoint():
+def test_stats_endpoint(client):
     response = client.get("/api/stats")
 
     assert response.status_code == 200
@@ -40,7 +46,7 @@ def test_stats_endpoint():
     assert "access_requests_pending" in data
 
 
-def test_user_access_check_specific_system():
+def test_user_access_check_specific_system(client):
     response = client.get("/api/users/janesmith/access?system=jira")
 
     assert response.status_code == 200
@@ -52,13 +58,13 @@ def test_user_access_check_specific_system():
     assert "access_found" in data
 
 
-def test_invalid_system_returns_404():
+def test_invalid_system_returns_404(client):
     response = client.get("/api/users/janesmith/access?system=notarealsystem")
 
     assert response.status_code == 404
 
 
-def test_grant_access_mock_mode():
+def test_grant_access_mock_mode(client):
     response = client.post("/api/users/testapi/grant/jira?mock=true")
 
     assert response.status_code == 200
@@ -72,7 +78,7 @@ def test_grant_access_mock_mode():
     assert data["mock"] is True
 
 
-def test_remove_access_dry_run():
+def test_remove_access_dry_run(client):
     response = client.post("/api/users/testapi/remove/jira?mock=true&dry_run=true")
 
     assert response.status_code == 200
